@@ -37,6 +37,7 @@
 6. **Ghost Mode & Solder-Side View**
    - **Ghost (`G`)** makes component housings transparent enough to inspect holes and solder underneath. It is enabled automatically while routing wires, drawing solder, or cutting tracks; leaving the tool restores the manual ghost preference.
    - **Flip (`F`)** turns the workspace over into a horizontally mirrored solder-side view, keeping identifiers readable and hole coordinates unchanged. Components appear transparent and solder-side wires/traces are drawn in front. Pan, zoom, picking, and placement use the mirrored coordinates. This is a view change, not a destructive edit or a physical component flip.
+   - In the flipped view, component-side wires are ghosted too (including their outlines and selection handles), while solder-side wires and through-hole pins/leads remain solid. Housing-overhang markers are hidden on the solder side; ghost wire paths do not visually block the holes they cross.
 
 ## Building & Running with Nix
 

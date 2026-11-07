@@ -255,9 +255,10 @@ pub fn render_workspace(
     }
 
     // 3. Render blocked overhang indicators if enabled or while placing a component
-    if preview.show_x_ray_blocked_holes
-        || !preview.ghost_connectors.is_empty()
-        || preview.ghost_components
+    if !viewport.flipped
+        && (preview.show_x_ray_blocked_holes
+            || !preview.ghost_connectors.is_empty()
+            || preview.ghost_components)
     {
         draw_blocked_hole_markers(painter, canvas_rect, viewport, project);
     }
@@ -918,7 +919,7 @@ fn draw_connector(
     };
     let pin_alpha = if is_placement_preview {
         200
-    } else if is_xray_ghost {
+    } else if is_xray_ghost && !viewport.flipped {
         165
     } else {
         255
@@ -989,7 +990,7 @@ fn draw_connector(
                 for c in 0..(*cols as i32) {
                     let p = to_screen(c as f32, r as f32);
                     let is_pin1 = r == 0 && c == 0;
-                    if *female {
+                    if *female && !viewport.flipped {
                         let sock = Rect::from_center_size(p, Vec2::splat(ppp * 0.44));
                         painter.rect_filled(
                             sock,
@@ -1055,7 +1056,7 @@ fn draw_connector(
                         );
 
                         // Highlight the blocked side-overhang holes on the housing
-                        for &(bc, br) in &fp.blocked_offsets {
+                        for &(bc, br) in fp.blocked_offsets.iter().filter(|_| !viewport.flipped) {
                             let bp = to_screen(bc as f32, br as f32);
                             let r = ppp * 0.22;
                             painter.circle_stroke(
@@ -1271,11 +1272,15 @@ fn draw_wire(
 
     let width = (ppp * 0.24 * wire.thickness).clamp(2.2, 10.0);
     let jacket_color = wire.color.to_color32();
+    let is_far_side = viewport.flipped && wire.layer == crate::model::WireLayer::TopComponent;
 
     // Subtle shadow / outline for contrast over board & pads
     let shadow_stroke = Stroke::new(
         width + 2.4,
-        if is_selected {
+        if is_far_side {
+            // An opaque outline would hide holes even with a transparent jacket.
+            Color32::from_rgba_unmultiplied(12, 14, 18, 35)
+        } else if is_selected {
             Color32::from_rgb(255, 255, 255)
         } else {
             Color32::from_rgba_unmultiplied(12, 14, 18, 190)
@@ -1284,14 +1289,17 @@ fn draw_wire(
     painter.add(egui::Shape::line(pts_screen.clone(), shadow_stroke));
 
     // Main insulated wire jacket
-    let wire_stroke = if wire.layer == crate::model::WireLayer::BottomSolder {
+    let wire_stroke = if is_far_side {
+        Stroke::new(width, wire.color.with_alpha(65))
+    } else if wire.layer == crate::model::WireLayer::BottomSolder && !viewport.flipped {
         Stroke::new(width * 0.9, wire.color.with_alpha(200))
     } else {
         Stroke::new(width, jacket_color)
     };
     painter.add(egui::Shape::line(pts_screen.clone(), wire_stroke));
 
-    // Stripped metallic wire ends at start and end holes
+    // Through-hole wire ends stay solid: only these holes contain wire leads,
+    // not the holes crossed by the ghosted jacket on the opposite side.
     if let (Some(&first), Some(&last)) = (pts_screen.first(), pts_screen.last()) {
         let lug_r = (width * 0.72).max(3.0);
         for ep in [first, last] {
@@ -1304,8 +1312,23 @@ fn draw_wire(
     if is_selected {
         for wp in &wire.waypoints {
             let sp = viewport.world_to_screen(canvas_rect, *wp);
-            painter.circle_filled(sp, 4.5, Color32::WHITE);
-            painter.circle_stroke(sp, 4.5, Stroke::new(1.5_f32, jacket_color));
+            painter.circle_filled(
+                sp,
+                4.5,
+                Color32::from_white_alpha(if is_far_side { 65 } else { 255 }),
+            );
+            painter.circle_stroke(
+                sp,
+                4.5,
+                Stroke::new(
+                    1.5_f32,
+                    if is_far_side {
+                        wire.color.with_alpha(65)
+                    } else {
+                        jacket_color
+                    },
+                ),
+            );
         }
     }
 }
@@ -1353,6 +1376,125 @@ fn draw_wire_in_progress(
 #[cfg(test)]
 mod viewport_tests {
     use super::*;
+
+    #[test]
+    fn flipped_far_side_wires_are_ghosted_but_contacts_and_near_side_stay_solid() {
+        for flipped in [false, true] {
+            for layer in [
+                crate::model::WireLayer::TopComponent,
+                crate::model::WireLayer::BottomSolder,
+            ] {
+                for selected in [false, true] {
+                    let ctx = egui::Context::default();
+                    let wire = Wire {
+                        id: Uuid::new_v4(),
+                        label: String::new(),
+                        start_hole: GridPos::new(0, 0),
+                        end_hole: GridPos::new(4, 4),
+                        waypoints: vec![WorldPos::new(2.0, 1.0)],
+                        mode: WireMode::Spline,
+                        color: RgbColor::new(238, 72, 72),
+                        thickness: 1.0,
+                        layer,
+                    };
+                    let viewport = Viewport {
+                        flipped,
+                        ..Default::default()
+                    };
+                    let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+                    let output = ctx.run(egui::RawInput::default(), |ctx| {
+                        draw_wire(
+                            &ctx.layer_painter(egui::LayerId::background()),
+                            rect,
+                            &viewport,
+                            &wire,
+                            selected,
+                        );
+                    });
+                    let paths: Vec<_> = output
+                        .shapes
+                        .iter()
+                        .filter_map(|s| match &s.shape {
+                            egui::Shape::Path(p) => Some(p),
+                            _ => None,
+                        })
+                        .collect();
+                    let far_side = flipped && layer == crate::model::WireLayer::TopComponent;
+                    let alpha = if far_side {
+                        65
+                    } else if !flipped && layer == crate::model::WireLayer::BottomSolder {
+                        200
+                    } else {
+                        255
+                    };
+                    let width =
+                        (viewport.pixels_per_pitch * 0.24 * wire.thickness).clamp(2.2, 10.0);
+                    let width = if !flipped && layer == crate::model::WireLayer::BottomSolder {
+                        width * 0.9
+                    } else {
+                        width
+                    };
+                    assert_eq!(
+                        paths[1].stroke,
+                        Stroke::new(width, wire.color.with_alpha(alpha)).into()
+                    );
+                    if far_side {
+                        assert_eq!(
+                            paths[0].stroke,
+                            Stroke::new(
+                                width + 2.4,
+                                Color32::from_rgba_unmultiplied(12, 14, 18, 35)
+                            )
+                            .into()
+                        );
+                    }
+                    // Four endpoint circles (two per hole) stay opaque, including far-side leads.
+                    let contacts: Vec<_> = output
+                        .shapes
+                        .iter()
+                        .filter_map(|s| match &s.shape {
+                            egui::Shape::Circle(c) => Some(c),
+                            _ => None,
+                        })
+                        .take(4)
+                        .collect();
+                    assert_eq!(contacts.len(), 4);
+                    assert!(contacts.iter().all(|c| c.fill.a() == 255));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn flipped_component_pins_remain_opaque() {
+        let ctx = egui::Context::default();
+        let connector = Project::new_starter().connectors[0].clone();
+        let viewport = Viewport {
+            flipped: true,
+            ..Default::default()
+        };
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(1200.0, 900.0));
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            draw_connector(
+                &ctx.layer_painter(egui::LayerId::background()),
+                rect,
+                &viewport,
+                &connector,
+                false,
+                false,
+                true,
+                true,
+                false,
+            );
+        });
+        assert!(
+            output.shapes.iter().any(|s| match &s.shape {
+                egui::Shape::Rect(r) => r.fill == Color32::from_rgb(255, 228, 132),
+                _ => false,
+            }),
+            "Pin posts must stay solid even when the housing is ghosted"
+        );
+    }
 
     #[test]
     fn flipped_coordinates_pan_and_cursor_zoom_are_consistent() {
