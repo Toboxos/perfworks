@@ -1,4 +1,100 @@
-use crate::model::RgbColor;
+use crate::model::{AxisLabelStyle, BoardKind, BoardTheme, RgbColor};
+
+/// Standard board template in the library (Perfboard, Stripboard, Breadboard)
+#[derive(Debug, Clone)]
+pub struct BoardPreset {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub short_name: &'static str,
+    pub description: &'static str,
+    pub cols: u32,
+    pub rows: u32,
+    pub kind: BoardKind,
+    pub theme: BoardTheme,
+    pub col_label_style: AxisLabelStyle,
+    pub row_label_style: AxisLabelStyle,
+}
+
+pub fn standard_board_library() -> Vec<BoardPreset> {
+    vec![
+        BoardPreset {
+            id: "board_perf_24x18",
+            name: "Standard Perfboard (24×18 — 5×7cm)",
+            short_name: "Perfboard 24×18",
+            description: "Classic 5×7cm isolated-pad FR4 prototyping perfboard",
+            cols: 24,
+            rows: 18,
+            kind: BoardKind::Perfboard,
+            theme: BoardTheme::ClassicGreen,
+            col_label_style: AxisLabelStyle::Numbers1Based,
+            row_label_style: AxisLabelStyle::LettersUpper,
+        },
+        BoardPreset {
+            id: "board_perf_18x12",
+            name: "Compact Perfboard (18×12 — 3×5cm)",
+            short_name: "Perfboard 18×12",
+            description: "Compact 3×5cm isolated-pad FR4 prototyping board",
+            cols: 18,
+            rows: 12,
+            kind: BoardKind::Perfboard,
+            theme: BoardTheme::ClassicGreen,
+            col_label_style: AxisLabelStyle::Numbers1Based,
+            row_label_style: AxisLabelStyle::LettersUpper,
+        },
+        BoardPreset {
+            id: "board_perf_black_16x16",
+            name: "Square Matte Black Perfboard (16×16)",
+            short_name: "Black PCB 16×16",
+            description: "Matte black solder-mask square module board",
+            cols: 16,
+            rows: 16,
+            kind: BoardKind::Perfboard,
+            theme: BoardTheme::MatteBlack,
+            col_label_style: AxisLabelStyle::Numbers1Based,
+            row_label_style: AxisLabelStyle::LettersUpper,
+        },
+        BoardPreset {
+            id: "board_strip_h_24x14",
+            name: "Horizontal Stripboard / Veroboard (24×14)",
+            short_name: "Stripboard 24×14 (H)",
+            description: "Phenolic amber stripboard with horizontal copper tracks",
+            cols: 24,
+            rows: 14,
+            kind: BoardKind::StripboardHorizontal,
+            theme: BoardTheme::PhenolicAmber,
+            col_label_style: AxisLabelStyle::Numbers1Based,
+            row_label_style: AxisLabelStyle::LettersUpper,
+        },
+        BoardPreset {
+            id: "board_strip_v_14x20",
+            name: "Vertical Stripboard (14×20)",
+            short_name: "Stripboard 14×20 (V)",
+            description: "Phenolic amber stripboard with vertical copper tracks",
+            cols: 14,
+            rows: 20,
+            kind: BoardKind::StripboardVertical,
+            theme: BoardTheme::PhenolicAmber,
+            col_label_style: AxisLabelStyle::Numbers1Based,
+            row_label_style: AxisLabelStyle::LettersUpper,
+        },
+        BoardPreset {
+            id: "board_breadboard_30x10",
+            name: "Half-Size Breadboard (30×10)",
+            short_name: "Breadboard 30×10",
+            description: "Solderless breadboard with 5-hole terminal strips and center IC trench",
+            cols: 30,
+            rows: 10,
+            kind: BoardKind::Breadboard,
+            theme: BoardTheme::BreadboardWhite,
+            col_label_style: AxisLabelStyle::Numbers1Based,
+            row_label_style: AxisLabelStyle::LettersUpper,
+        },
+    ]
+}
+
+pub fn get_board_preset_by_id(id: &str) -> Option<BoardPreset> {
+    standard_board_library().into_iter().find(|b| b.id == id)
+}
 
 /// Category of standard library component
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +121,7 @@ impl FootprintCategory {
             FootprintCategory::ScrewTerminal => "Screw Terminals",
             FootprintCategory::IcSocket => "DIP IC Sockets",
             FootprintCategory::PassiveOrDiscrete => "Passives & Discretes",
-            FootprintCategory::Module => "Modules & Headers",
+            FootprintCategory::Module => "Modules & Switches",
         }
     }
 }
@@ -159,7 +255,7 @@ pub fn standard_library() -> Vec<FootprintDef> {
         });
     }
 
-    // 2. Screw Terminals (5.08mm / 2-pitch spacing per pole, plus 2.54mm compact)
+    // 2. Screw Terminals (5.08mm / 2-pitch spacing per pole)
     list.push(FootprintDef {
         id: "screw_term_2",
         name: "Screw Terminal 2-Pole (5.08mm / 2-Hole Pitch)",
@@ -254,7 +350,6 @@ pub fn standard_library() -> Vec<FootprintDef> {
         ("dip_16", "DIP-16 IC Socket (300mil)", "DIP-16", 8),
     ] {
         let mut pins = Vec::new();
-        // Left column: pins 1..=half_pins going down (dcol=0, drow=0..half_pins)
         let static_names = [
             "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16",
         ];
@@ -266,7 +361,6 @@ pub fn standard_library() -> Vec<FootprintDef> {
                 square: i == 0,
             });
         }
-        // Right column: pins (half_pins+1)..=2*half_pins going up (dcol=3, drow=(half_pins-1)..=0)
         for i in 0..half_pins {
             let pin_idx = (half_pins + i) as usize;
             pins.push(PinDef {

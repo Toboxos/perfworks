@@ -805,12 +805,9 @@ impl Default for Project {
 
 impl Project {
     pub fn new_empty(name: impl Into<String>) -> Self {
-        let mut board = Perfboard::new("Main Board", GridPos::new(0, 0), 24, 18);
-        board.col_label_style = AxisLabelStyle::Numbers1Based;
-        board.row_label_style = AxisLabelStyle::LettersUpper;
         Self {
             name: name.into(),
-            boards: vec![board],
+            boards: Vec::new(),
             connectors: Vec::new(),
             wires: Vec::new(),
             solder_lines: Vec::new(),

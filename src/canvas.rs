@@ -127,6 +127,7 @@ pub enum SelectedItem {
 
 /// Preview state painted while placing a new item or drawing a wire/solder trace
 pub struct CanvasRenderPreview<'a> {
+    pub ghost_board: Option<&'a Perfboard>,
     pub ghost_connector: Option<&'a PlacedConnector>,
     pub active_wire_in_progress: Option<(GridPos, &'a [WorldPos], WorldPos, WireMode, RgbColor)>,
     pub active_solder_in_progress: Option<&'a [GridPos]>,
@@ -214,7 +215,7 @@ pub fn render_workspace(
     canvas_rect: Rect,
     viewport: &Viewport,
     project: &Project,
-    selected: &Option<SelectedItem>,
+    selected: &[SelectedItem],
     preview: &CanvasRenderPreview<'_>,
 ) {
     // 1. Dark Fusion/KiCad-inspired background with subtle vignette/grid
@@ -223,8 +224,13 @@ pub fn render_workspace(
 
     // 2. Render each Perfboard / Stripboard / Breadboard
     for board in &project.boards {
-        let is_selected = matches!(selected, Some(SelectedItem::Board(id)) if *id == board.id);
+        let is_selected = selected.contains(&SelectedItem::Board(board.id));
         draw_board(painter, canvas_rect, viewport, project, board, is_selected);
+    }
+
+    // 2b. Render Ghost Board Preview when placing a board from the library
+    if let Some(ghost_board) = preview.ghost_board {
+        draw_board(painter, canvas_rect, viewport, project, ghost_board, true);
     }
 
     // 3. Render blocked overhang indicators if enabled or while placing a component
@@ -234,7 +240,7 @@ pub fn render_workspace(
 
     // 4. Render Solder Lines (metallic solder traces spanning adjacent holes)
     for solder in &project.solder_lines {
-        let is_selected = matches!(selected, Some(SelectedItem::SolderLine(id)) if *id == solder.id);
+        let is_selected = selected.contains(&SelectedItem::SolderLine(solder.id));
         draw_solder_line(painter, canvas_rect, viewport, solder, is_selected, false);
     }
 
@@ -252,13 +258,13 @@ pub fn render_workspace(
         .iter()
         .filter(|w| w.layer == crate::model::WireLayer::BottomSolder)
     {
-        let is_selected = matches!(selected, Some(SelectedItem::Wire(id)) if *id == wire.id);
+        let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
         draw_wire(painter, canvas_rect, viewport, wire, is_selected);
     }
 
     // 6. Render Placed Connectors, Headers, and Library Components
     for conn in &project.connectors {
-        let is_selected = matches!(selected, Some(SelectedItem::Connector(id)) if *id == conn.id);
+        let is_selected = selected.contains(&SelectedItem::Connector(conn.id));
         draw_connector(
             painter,
             canvas_rect,
@@ -277,7 +283,7 @@ pub fn render_workspace(
         .iter()
         .filter(|w| w.layer == crate::model::WireLayer::TopComponent)
     {
-        let is_selected = matches!(selected, Some(SelectedItem::Wire(id)) if *id == wire.id);
+        let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
         draw_wire(painter, canvas_rect, viewport, wire, is_selected);
     }
 

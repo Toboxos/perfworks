@@ -181,4 +181,26 @@ mod tests {
         assert_eq!(spline_pts.first().copied(), Some(WorldPos::new(1.0, 1.0)));
         assert_eq!(spline_pts.last().copied(), Some(WorldPos::new(8.0, 6.0)));
     }
+
+    #[test]
+    fn test_clear_all_and_select_all() {
+        let mut app = crate::app::PerfworkApp::default();
+        assert!(!app.project.boards.is_empty());
+        assert!(!app.project.connectors.is_empty());
+
+        let expected_total = app.project.boards.len()
+            + app.project.connectors.len()
+            + app.project.wires.len()
+            + app.project.solder_lines.len();
+
+        app.select_all();
+        assert_eq!(app.selected.len(), expected_total);
+
+        app.clear_all();
+        assert!(app.project.boards.is_empty());
+        assert!(app.project.connectors.is_empty());
+        assert!(app.project.wires.is_empty());
+        assert!(app.project.solder_lines.is_empty());
+        assert!(app.selected.is_empty());
+    }
 }
