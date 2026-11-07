@@ -1,0 +1,6 @@
+/target
+/dist
+result
+result-*
+.DS_Store
+*.swp
