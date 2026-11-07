@@ -1,5 +1,6 @@
 pub mod app;
 pub mod canvas;
+pub mod icons;
 pub mod library;
 pub mod model;
 
