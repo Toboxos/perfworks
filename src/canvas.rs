@@ -45,6 +45,9 @@ pub struct Viewport {
     pub center: WorldPos,
     /// Pixels per grid pitch (default 28.0 px per 2.54mm pitch)
     pub pixels_per_pitch: f32,
+    /// Whether the board is flipped horizontally (Bottom / Solder-Side View)
+    #[serde(default)]
+    pub flipped: bool,
 }
 
 impl Default for Viewport {
@@ -52,15 +55,25 @@ impl Default for Viewport {
         Self {
             center: WorldPos::new(16.0, 8.5),
             pixels_per_pitch: 27.0,
+            flipped: false,
         }
     }
 }
 
 impl Viewport {
+    #[inline]
+    fn x_sign(&self) -> f32 {
+        if self.flipped {
+            -1.0
+        } else {
+            1.0
+        }
+    }
+
     pub fn world_to_screen(&self, canvas_rect: Rect, world: WorldPos) -> Pos2 {
         let center_screen = canvas_rect.center();
         Pos2::new(
-            center_screen.x + (world.x - self.center.x) * self.pixels_per_pitch,
+            center_screen.x + (world.x - self.center.x) * self.pixels_per_pitch * self.x_sign(),
             center_screen.y + (world.y - self.center.y) * self.pixels_per_pitch,
         )
     }
@@ -72,9 +85,16 @@ impl Viewport {
     pub fn screen_to_world(&self, canvas_rect: Rect, screen: Pos2) -> WorldPos {
         let center_screen = canvas_rect.center();
         WorldPos::new(
-            self.center.x + (screen.x - center_screen.x) / self.pixels_per_pitch,
+            self.center.x + (screen.x - center_screen.x) / (self.pixels_per_pitch * self.x_sign()),
             self.center.y + (screen.y - center_screen.y) / self.pixels_per_pitch,
         )
+    }
+
+    /// Convert two arbitrary world points into a normalized screen `Rect` (handles mirrored X in flipped view)
+    pub fn world_rect_to_screen(&self, canvas_rect: Rect, a: WorldPos, b: WorldPos) -> Rect {
+        let pa = self.world_to_screen(canvas_rect, a);
+        let pb = self.world_to_screen(canvas_rect, b);
+        Rect::from_two_pos(pa, pb)
     }
 
     pub fn zoom_at_screen_pos(&mut self, canvas_rect: Rect, screen_pos: Pos2, zoom_factor: f32) {
@@ -86,7 +106,7 @@ impl Viewport {
     }
 
     pub fn pan_by_pixels(&mut self, delta_px: Vec2) {
-        self.center.x -= delta_px.x / self.pixels_per_pitch;
+        self.center.x -= delta_px.x / (self.pixels_per_pitch * self.x_sign());
         self.center.y -= delta_px.y / self.pixels_per_pitch;
     }
 
@@ -128,10 +148,11 @@ pub enum SelectedItem {
 /// Preview state painted while placing a new item or drawing a wire/solder trace
 pub struct CanvasRenderPreview<'a> {
     pub ghost_board: Option<&'a Perfboard>,
-    pub ghost_connector: Option<&'a PlacedConnector>,
+    pub ghost_connectors: &'a [PlacedConnector],
     pub active_wire_in_progress: Option<(GridPos, &'a [WorldPos], WorldPos, WireMode, RgbColor)>,
     pub active_solder_in_progress: Option<&'a [GridPos]>,
     pub hovered_hole: Option<GridPos>,
+    pub ghost_components: bool,
     pub show_x_ray_blocked_holes: bool,
     pub show_pin_labels: bool,
     pub show_net_highlights: bool,
@@ -234,61 +255,103 @@ pub fn render_workspace(
     }
 
     // 3. Render blocked overhang indicators if enabled or while placing a component
-    if preview.show_x_ray_blocked_holes || preview.ghost_connector.is_some() {
+    if preview.show_x_ray_blocked_holes
+        || !preview.ghost_connectors.is_empty()
+        || preview.ghost_components
+    {
         draw_blocked_hole_markers(painter, canvas_rect, viewport, project);
     }
 
-    // 4. Render Solder Lines (metallic solder traces spanning adjacent holes)
-    for solder in &project.solder_lines {
-        let is_selected = selected.contains(&SelectedItem::SolderLine(solder.id));
-        draw_solder_line(painter, canvas_rect, viewport, solder, is_selected, false);
-    }
+    let draw_solder_all = |painter: &egui::Painter| {
+        for solder in &project.solder_lines {
+            let is_selected = selected.contains(&SelectedItem::SolderLine(solder.id));
+            draw_solder_line(painter, canvas_rect, viewport, solder, is_selected, false);
+        }
+        if let Some(nodes) = preview.active_solder_in_progress {
+            if !nodes.is_empty() {
+                let temp = SolderLine::new(nodes.to_vec());
+                draw_solder_line(painter, canvas_rect, viewport, &temp, true, true);
+            }
+        }
+    };
 
-    // Active solder line preview
-    if let Some(nodes) = preview.active_solder_in_progress {
-        if !nodes.is_empty() {
-            let temp = SolderLine::new(nodes.to_vec());
-            draw_solder_line(painter, canvas_rect, viewport, &temp, true, true);
+    // In Top View: Solder lines & bottom wires are underneath components (and visible through Ghost Mode).
+    // In Flipped (Bottom / Solder-Side) View: Components are on the back (semi-transparent) and solder lines + bottom wires are on top!
+    if viewport.flipped {
+        // Back-side (Top) components and top wires first
+        for conn in &project.connectors {
+            let is_selected = selected.contains(&SelectedItem::Connector(conn.id));
+            draw_connector(
+                painter,
+                canvas_rect,
+                viewport,
+                conn,
+                is_selected,
+                false,
+                true,
+                true,
+                preview.show_pin_labels,
+            );
+        }
+        for wire in project
+            .wires
+            .iter()
+            .filter(|w| w.layer == crate::model::WireLayer::TopComponent)
+        {
+            let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
+            draw_wire(painter, canvas_rect, viewport, wire, is_selected);
+        }
+        // Now foreground Solder side traces and bottom wires
+        draw_solder_all(painter);
+        for wire in project
+            .wires
+            .iter()
+            .filter(|w| w.layer == crate::model::WireLayer::BottomSolder)
+        {
+            let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
+            draw_wire(painter, canvas_rect, viewport, wire, is_selected);
+        }
+    } else {
+        // Normal Top View
+        draw_solder_all(painter);
+
+        for wire in project
+            .wires
+            .iter()
+            .filter(|w| w.layer == crate::model::WireLayer::BottomSolder)
+        {
+            let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
+            draw_wire(painter, canvas_rect, viewport, wire, is_selected);
+        }
+
+        for conn in &project.connectors {
+            let is_selected = selected.contains(&SelectedItem::Connector(conn.id));
+            draw_connector(
+                painter,
+                canvas_rect,
+                viewport,
+                conn,
+                is_selected,
+                false,
+                preview.ghost_components,
+                true,
+                preview.show_pin_labels,
+            );
+        }
+
+        for wire in project
+            .wires
+            .iter()
+            .filter(|w| w.layer == crate::model::WireLayer::TopComponent)
+        {
+            let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
+            draw_wire(painter, canvas_rect, viewport, wire, is_selected);
         }
     }
 
-    // 5. Render Bottom-layer wires before top components
-    for wire in project
-        .wires
-        .iter()
-        .filter(|w| w.layer == crate::model::WireLayer::BottomSolder)
-    {
-        let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
-        draw_wire(painter, canvas_rect, viewport, wire, is_selected);
-    }
-
-    // 6. Render Placed Connectors, Headers, and Library Components
-    for conn in &project.connectors {
-        let is_selected = selected.contains(&SelectedItem::Connector(conn.id));
-        draw_connector(
-            painter,
-            canvas_rect,
-            viewport,
-            conn,
-            is_selected,
-            false,
-            true,
-            preview.show_pin_labels,
-        );
-    }
-
-    // 7. Render Top-layer wires
-    for wire in project
-        .wires
-        .iter()
-        .filter(|w| w.layer == crate::model::WireLayer::TopComponent)
-    {
-        let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
-        draw_wire(painter, canvas_rect, viewport, wire, is_selected);
-    }
-
     // 8. Render Active Wire in Progress
-    if let Some((start_hole, waypoints, cursor_world, mode, color)) = preview.active_wire_in_progress
+    if let Some((start_hole, waypoints, cursor_world, mode, color)) =
+        preview.active_wire_in_progress
     {
         draw_wire_in_progress(
             painter,
@@ -302,9 +365,14 @@ pub fn render_workspace(
         );
     }
 
-    // 9. Render Ghost Connector Preview (with live DRC validity check)
-    if let Some(ghost) = preview.ghost_connector {
-        let validation = project.validate_connector_placement(ghost, None);
+    // 9. Render Ghost Connector Preview(s) (with live DRC validity check)
+    for ghost in preview.ghost_connectors {
+        let ignore_id = if ghost.id.is_nil() {
+            None
+        } else {
+            Some(ghost.id)
+        };
+        let validation = project.validate_connector_placement(ghost, ignore_id);
         let is_valid = validation.is_ok();
         draw_connector(
             painter,
@@ -313,6 +381,7 @@ pub fn render_workspace(
             ghost,
             false,
             true,
+            false,
             is_valid,
             preview.show_pin_labels,
         );
@@ -322,11 +391,17 @@ pub fn render_workspace(
                 let r = viewport.pixels_per_pitch * 0.44;
                 painter.circle_stroke(p, r, Stroke::new(2.2_f32, Color32::from_rgb(255, 78, 78)));
                 painter.line_segment(
-                    [p + egui::vec2(-r * 0.6, -r * 0.6), p + egui::vec2(r * 0.6, r * 0.6)],
+                    [
+                        p + egui::vec2(-r * 0.6, -r * 0.6),
+                        p + egui::vec2(r * 0.6, r * 0.6),
+                    ],
                     Stroke::new(2.2_f32, Color32::from_rgb(255, 78, 78)),
                 );
                 painter.line_segment(
-                    [p + egui::vec2(r * 0.6, -r * 0.6), p + egui::vec2(-r * 0.6, r * 0.6)],
+                    [
+                        p + egui::vec2(r * 0.6, -r * 0.6),
+                        p + egui::vec2(-r * 0.6, r * 0.6),
+                    ],
                     Stroke::new(2.2_f32, Color32::from_rgb(255, 78, 78)),
                 );
             }
@@ -350,10 +425,10 @@ fn draw_world_grid(painter: &egui::Painter, canvas_rect: Rect, viewport: &Viewpo
     let top_left = viewport.screen_to_world(canvas_rect, canvas_rect.min);
     let bottom_right = viewport.screen_to_world(canvas_rect, canvas_rect.max);
 
-    let min_col = top_left.x.floor() as i32 - 1;
-    let max_col = bottom_right.x.ceil() as i32 + 1;
-    let min_row = top_left.y.floor() as i32 - 1;
-    let max_row = bottom_right.y.ceil() as i32 + 1;
+    let min_col = top_left.x.min(bottom_right.x).floor() as i32 - 1;
+    let max_col = top_left.x.max(bottom_right.x).ceil() as i32 + 1;
+    let min_row = top_left.y.min(bottom_right.y).floor() as i32 - 1;
+    let max_row = top_left.y.max(bottom_right.y).ceil() as i32 + 1;
 
     let major_stroke = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(54, 60, 74, 110));
     let minor_stroke = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(34, 38, 48, 95));
@@ -366,17 +441,26 @@ fn draw_world_grid(painter: &egui::Painter, canvas_rect: Rect, viewport: &Viewpo
             .x;
         if col == 0 {
             painter.line_segment(
-                [Pos2::new(x, canvas_rect.min.y), Pos2::new(x, canvas_rect.max.y)],
+                [
+                    Pos2::new(x, canvas_rect.min.y),
+                    Pos2::new(x, canvas_rect.max.y),
+                ],
                 origin_y_stroke,
             );
         } else if col % 5 == 0 {
             painter.line_segment(
-                [Pos2::new(x, canvas_rect.min.y), Pos2::new(x, canvas_rect.max.y)],
+                [
+                    Pos2::new(x, canvas_rect.min.y),
+                    Pos2::new(x, canvas_rect.max.y),
+                ],
                 major_stroke,
             );
         } else if ppp >= 15.0 {
             painter.line_segment(
-                [Pos2::new(x, canvas_rect.min.y), Pos2::new(x, canvas_rect.max.y)],
+                [
+                    Pos2::new(x, canvas_rect.min.y),
+                    Pos2::new(x, canvas_rect.max.y),
+                ],
                 minor_stroke,
             );
         }
@@ -388,17 +472,26 @@ fn draw_world_grid(painter: &egui::Painter, canvas_rect: Rect, viewport: &Viewpo
             .y;
         if row == 0 {
             painter.line_segment(
-                [Pos2::new(canvas_rect.min.x, y), Pos2::new(canvas_rect.max.x, y)],
+                [
+                    Pos2::new(canvas_rect.min.x, y),
+                    Pos2::new(canvas_rect.max.x, y),
+                ],
                 origin_x_stroke,
             );
         } else if row % 5 == 0 {
             painter.line_segment(
-                [Pos2::new(canvas_rect.min.x, y), Pos2::new(canvas_rect.max.x, y)],
+                [
+                    Pos2::new(canvas_rect.min.x, y),
+                    Pos2::new(canvas_rect.max.x, y),
+                ],
                 major_stroke,
             );
         } else if ppp >= 15.0 {
             painter.line_segment(
-                [Pos2::new(canvas_rect.min.x, y), Pos2::new(canvas_rect.max.x, y)],
+                [
+                    Pos2::new(canvas_rect.min.x, y),
+                    Pos2::new(canvas_rect.max.x, y),
+                ],
                 minor_stroke,
             );
         }
@@ -415,9 +508,7 @@ fn draw_board(
 ) {
     let ppp = viewport.pixels_per_pitch;
     let (bmin, bmax) = board.world_bounds();
-    let p_min = viewport.world_to_screen(canvas_rect, bmin);
-    let p_max = viewport.world_to_screen(canvas_rect, bmax);
-    let board_rect = Rect::from_min_max(p_min, p_max);
+    let board_rect = viewport.world_rect_to_screen(canvas_rect, bmin, bmax);
 
     // Quick frustum cull
     if !canvas_rect.intersects(board_rect.expand(40.0)) {
@@ -443,7 +534,12 @@ fn draw_board(
     } else {
         Stroke::new(1.6_f32, board.theme.substrate_border())
     };
-    painter.rect_stroke(board_rect, rounding, border_stroke, egui::StrokeKind::Outside);
+    painter.rect_stroke(
+        board_rect,
+        rounding,
+        border_stroke,
+        egui::StrokeKind::Outside,
+    );
 
     // Board title above top-left corner
     if ppp >= 11.0 {
@@ -497,15 +593,17 @@ fn draw_board(
             let strip_color = Color32::from_rgba_unmultiplied(198, 146, 74, 155);
             let half_h = ppp * 0.27;
             for r in 0..(board.rows as i32) {
-                let p_start = viewport
-                    .grid_to_screen(canvas_rect, board.local_to_global(GridPos::new(0, r)));
+                let p_start =
+                    viewport.grid_to_screen(canvas_rect, board.local_to_global(GridPos::new(0, r)));
                 let p_end = viewport.grid_to_screen(
                     canvas_rect,
                     board.local_to_global(GridPos::new(board.cols as i32 - 1, r)),
                 );
+                let min_x = p_start.x.min(p_end.x) - ppp * 0.34;
+                let max_x = p_start.x.max(p_end.x) + ppp * 0.34;
                 let rect = Rect::from_min_max(
-                    Pos2::new(p_start.x - ppp * 0.34, p_start.y - half_h),
-                    Pos2::new(p_end.x + ppp * 0.34, p_end.y + half_h),
+                    Pos2::new(min_x, p_start.y - half_h),
+                    Pos2::new(max_x, p_end.y + half_h),
                 );
                 painter.rect_filled(rect, half_h * 0.6, strip_color);
             }
@@ -514,15 +612,17 @@ fn draw_board(
             let strip_color = Color32::from_rgba_unmultiplied(198, 146, 74, 155);
             let half_w = ppp * 0.27;
             for c in 0..(board.cols as i32) {
-                let p_start = viewport
-                    .grid_to_screen(canvas_rect, board.local_to_global(GridPos::new(c, 0)));
+                let p_start =
+                    viewport.grid_to_screen(canvas_rect, board.local_to_global(GridPos::new(c, 0)));
                 let p_end = viewport.grid_to_screen(
                     canvas_rect,
                     board.local_to_global(GridPos::new(c, board.rows as i32 - 1)),
                 );
+                let min_y = p_start.y.min(p_end.y) - ppp * 0.34;
+                let max_y = p_start.y.max(p_end.y) + ppp * 0.34;
                 let rect = Rect::from_min_max(
-                    Pos2::new(p_start.x - half_w, p_start.y - ppp * 0.34),
-                    Pos2::new(p_end.x + half_w, p_end.y + ppp * 0.34),
+                    Pos2::new(p_start.x - half_w, min_y),
+                    Pos2::new(p_end.x + half_w, max_y),
                 );
                 painter.rect_filled(rect, half_w * 0.6, strip_color);
             }
@@ -641,7 +741,10 @@ fn draw_board(
                 let text = board.col_label_style.format_index(c);
                 let top_pos = viewport.world_to_screen(
                     canvas_rect,
-                    WorldPos::new((board.origin.col + c as i32) as f32, board.origin.row as f32 - 0.72),
+                    WorldPos::new(
+                        (board.origin.col + c as i32) as f32,
+                        board.origin.row as f32 - 0.72,
+                    ),
                 );
                 painter.text(
                     top_pos,
@@ -676,7 +779,10 @@ fn draw_board(
                 let text = board.row_label_style.format_index(r);
                 let left_pos = viewport.world_to_screen(
                     canvas_rect,
-                    WorldPos::new(board.origin.col as f32 - 0.74, (board.origin.row + r as i32) as f32),
+                    WorldPos::new(
+                        board.origin.col as f32 - 0.74,
+                        (board.origin.row + r as i32) as f32,
+                    ),
                 );
                 painter.text(
                     left_pos,
@@ -797,35 +903,49 @@ fn draw_connector(
     viewport: &Viewport,
     conn: &PlacedConnector,
     is_selected: bool,
-    is_ghost: bool,
+    is_placement_preview: bool,
+    is_xray_ghost: bool,
     is_valid: bool,
     show_pin_labels: bool,
 ) {
     let ppp = viewport.pixels_per_pitch;
-    let alpha = if is_ghost { 185 } else { 255 };
+    let body_alpha = if is_placement_preview {
+        185
+    } else if is_xray_ghost {
+        68
+    } else {
+        255
+    };
+    let pin_alpha = if is_placement_preview {
+        200
+    } else if is_xray_ghost {
+        165
+    } else {
+        255
+    };
 
     let (aabb_min, aabb_max) = conn.world_aabb();
-    let p_min = viewport.world_to_screen(canvas_rect, aabb_min);
-    let p_max = viewport.world_to_screen(canvas_rect, aabb_max);
-    let body_rect = Rect::from_min_max(p_min, p_max);
+    let body_rect = viewport.world_rect_to_screen(canvas_rect, aabb_min, aabb_max);
 
     if !canvas_rect.intersects(body_rect.expand(30.0)) {
         return;
     }
 
-    let fill_color = if is_ghost && !is_valid {
+    let fill_color = if is_placement_preview && !is_valid {
         Color32::from_rgba_unmultiplied(190, 45, 45, 160)
     } else {
-        conn.body_color.with_alpha(alpha)
+        conn.body_color.with_alpha(body_alpha)
     };
 
-    let border_color = if is_ghost && !is_valid {
+    let border_color = if is_placement_preview && !is_valid {
         Color32::from_rgb(255, 85, 85)
     } else if is_selected {
         Color32::from_rgb(82, 202, 255)
     } else {
-        Color32::from_rgba_unmultiplied(20, 22, 26, alpha)
+        Color32::from_rgba_unmultiplied(20, 22, 26, body_alpha.max(120))
     };
+
+    let alpha = body_alpha;
 
     // Transform helper from component-local pitch coordinates to screen coordinates
     let to_screen = |lx: f32, ly: f32| -> Pos2 {
@@ -841,14 +961,18 @@ fn draw_connector(
             let center = to_screen(0.0, 0.0);
             let outer = Vec2::splat(ppp * 0.76);
             let r = Rect::from_center_size(center, outer);
-            painter.rect_filled(r, ppp * 0.14, Color32::from_rgba_unmultiplied(36, 40, 48, alpha));
+            painter.rect_filled(
+                r,
+                ppp * 0.14,
+                Color32::from_rgba_unmultiplied(36, 40, 48, alpha),
+            );
             painter.rect_stroke(
                 r,
                 ppp * 0.14,
                 Stroke::new(if is_selected { 2.0_f32 } else { 1.2_f32 }, border_color),
                 egui::StrokeKind::Outside,
             );
-            draw_pin_post(painter, center, ppp, *square_pad, alpha);
+            draw_pin_post(painter, center, ppp, *square_pad, pin_alpha);
         }
 
         ConnectorKind::HeaderLine { cols, rows, female } => {
@@ -870,16 +994,19 @@ fn draw_connector(
                         painter.rect_filled(
                             sock,
                             1.5,
-                            Color32::from_rgba_unmultiplied(18, 20, 24, alpha),
+                            Color32::from_rgba_unmultiplied(18, 20, 24, pin_alpha),
                         );
                         painter.rect_stroke(
                             sock,
                             1.5,
-                            Stroke::new(1.1_f32, Color32::from_rgba_unmultiplied(215, 178, 72, alpha)),
+                            Stroke::new(
+                                1.1_f32,
+                                Color32::from_rgba_unmultiplied(215, 178, 72, pin_alpha),
+                            ),
                             egui::StrokeKind::Inside,
                         );
                     } else {
-                        draw_pin_post(painter, p, ppp, is_pin1, alpha);
+                        draw_pin_post(painter, p, ppp, is_pin1, pin_alpha);
                     }
                 }
             }
@@ -910,16 +1037,17 @@ fn draw_connector(
                         painter.rect_stroke(
                             cavity,
                             2.0,
-                            Stroke::new(1.2_f32, Color32::from_rgba_unmultiplied(145, 140, 128, alpha)),
+                            Stroke::new(
+                                1.2_f32,
+                                Color32::from_rgba_unmultiplied(145, 140, 128, alpha),
+                            ),
                             egui::StrokeKind::Inside,
                         );
 
                         // Latch boss along the bottom/front wall
                         let latch_a = to_screen(0.15, fp.body_max.1 - 0.30);
-                        let latch_b = to_screen(
-                            (fp.pins.len() as f32 - 1.0) - 0.15,
-                            fp.body_max.1 - 0.04,
-                        );
+                        let latch_b =
+                            to_screen((fp.pins.len() as f32 - 1.0) - 0.15, fp.body_max.1 - 0.04);
                         painter.rect_filled(
                             Rect::from_two_pos(latch_a, latch_b),
                             1.5,
@@ -939,7 +1067,10 @@ fn draw_connector(
                                 ),
                             );
                             painter.line_segment(
-                                [bp + egui::vec2(-r * 0.7, -r * 0.7), bp + egui::vec2(r * 0.7, r * 0.7)],
+                                [
+                                    bp + egui::vec2(-r * 0.7, -r * 0.7),
+                                    bp + egui::vec2(r * 0.7, r * 0.7),
+                                ],
                                 Stroke::new(
                                     1.3_f32,
                                     Color32::from_rgba_unmultiplied(210, 80, 60, alpha),
@@ -961,14 +1092,20 @@ fn draw_connector(
                             painter.circle_stroke(
                                 p,
                                 sr,
-                                Stroke::new(1.2_f32, Color32::from_rgba_unmultiplied(70, 76, 84, alpha)),
+                                Stroke::new(
+                                    1.2_f32,
+                                    Color32::from_rgba_unmultiplied(70, 76, 84, alpha),
+                                ),
                             );
                             painter.line_segment(
                                 [
                                     p + egui::vec2(-sr * 0.65, -sr * 0.65),
                                     p + egui::vec2(sr * 0.65, sr * 0.65),
                                 ],
-                                Stroke::new(2.0_f32, Color32::from_rgba_unmultiplied(65, 70, 78, alpha)),
+                                Stroke::new(
+                                    2.0_f32,
+                                    Color32::from_rgba_unmultiplied(65, 70, 78, alpha),
+                                ),
                             );
                         }
                     }
@@ -994,7 +1131,10 @@ fn draw_connector(
                         let p1 = to_screen(4.0, 0.0);
                         painter.line_segment(
                             [p0, p1],
-                            Stroke::new(ppp * 0.18, Color32::from_rgba_unmultiplied(190, 198, 210, alpha)),
+                            Stroke::new(
+                                ppp * 0.18,
+                                Color32::from_rgba_unmultiplied(190, 198, 210, alpha),
+                            ),
                         );
                         let body_a = to_screen(0.75, -0.42);
                         let body_b = to_screen(3.25, 0.42);
@@ -1015,7 +1155,11 @@ fn draw_connector(
                         ] {
                             let ba = to_screen(bx, -0.40);
                             let bb = to_screen(bx + 0.18, 0.40);
-                            painter.rect_filled(Rect::from_two_pos(ba, bb), 1.0, col);
+                            painter.rect_filled(
+                                Rect::from_two_pos(ba, bb),
+                                1.0,
+                                Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), alpha),
+                            );
                         }
                     }
 
@@ -1039,7 +1183,10 @@ fn draw_connector(
                         painter.circle_stroke(
                             btn_center,
                             ppp * 0.62,
-                            Stroke::new(1.4_f32, Color32::from_rgba_unmultiplied(140, 148, 160, alpha)),
+                            Stroke::new(
+                                1.4_f32,
+                                Color32::from_rgba_unmultiplied(140, 148, 160, alpha),
+                            ),
                         );
                     }
                 }
@@ -1047,7 +1194,7 @@ fn draw_connector(
                 // Draw all electrical pins
                 for pin in &fp.pins {
                     let p = to_screen(pin.dcol as f32, pin.drow as f32);
-                    draw_pin_post(painter, p, ppp, pin.square, alpha);
+                    draw_pin_post(painter, p, ppp, pin.square, pin_alpha);
                 }
             }
         }
@@ -1200,5 +1347,83 @@ fn draw_wire_in_progress(
         let sp = viewport.world_to_screen(canvas_rect, *wp);
         painter.circle_filled(sp, 4.0, Color32::WHITE);
         painter.circle_stroke(sp, 4.0, Stroke::new(1.5_f32, color.to_color32()));
+    }
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::*;
+
+    #[test]
+    fn flipped_coordinates_pan_and_cursor_zoom_are_consistent() {
+        let rect = Rect::from_min_size(egui::pos2(10.0, 40.0), egui::vec2(900.0, 600.0));
+        for flipped in [false, true] {
+            let mut viewport = Viewport {
+                flipped,
+                ..Default::default()
+            };
+            let world = WorldPos::new(3.5, 6.25);
+            let screen = viewport.world_to_screen(rect, world);
+            let roundtrip = viewport.screen_to_world(rect, screen);
+            assert!((world.x - roundtrip.x).abs() < 0.0001);
+            assert!((world.y - roundtrip.y).abs() < 0.0001);
+            viewport.zoom_at_screen_pos(rect, screen, 1.5);
+            assert!(viewport.world_to_screen(rect, world).distance(screen) < 0.001);
+            viewport.pan_by_pixels(egui::vec2(40.0, 15.0));
+            assert!(
+                viewport
+                    .world_to_screen(rect, world)
+                    .distance(screen + egui::vec2(40.0, 15.0))
+                    < 0.001
+            );
+            let bounds = viewport.world_rect_to_screen(
+                rect,
+                WorldPos::new(0.0, 0.0),
+                WorldPos::new(20.0, 10.0),
+            );
+            assert!(bounds.is_positive());
+        }
+    }
+
+    #[test]
+    fn render_top_bottom_and_ghost_without_native_window() {
+        let ctx = egui::Context::default();
+        let project = Project::new_starter();
+        for flipped in [false, true] {
+            for ghost in [false, true] {
+                let output = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let rect = ui.max_rect();
+                        let mut viewport = Viewport {
+                            flipped,
+                            ..Default::default()
+                        };
+                        viewport.fit_project(rect, &project);
+                        render_workspace(
+                            ui.painter(),
+                            rect,
+                            &viewport,
+                            &project,
+                            &[],
+                            &CanvasRenderPreview {
+                                ghost_board: None,
+                                ghost_connectors: &[],
+                                active_wire_in_progress: None,
+                                active_solder_in_progress: None,
+                                hovered_hole: None,
+                                ghost_components: ghost,
+                                show_x_ray_blocked_holes: false,
+                                show_pin_labels: true,
+                                show_net_highlights: false,
+                            },
+                        );
+                    });
+                });
+                assert!(!output.shapes.is_empty());
+                assert!(!ctx
+                    .tessellate(output.shapes, output.pixels_per_point)
+                    .is_empty());
+            }
+        }
     }
 }

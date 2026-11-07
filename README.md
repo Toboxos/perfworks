@@ -6,9 +6,12 @@
 
 1. **Autodesk Fusion-Inspired Floating UI & Add Dialog**
    - **Standard Window Menu Bar** (`File`, `Edit`, `View`) at the top for file operations, undo/redo, and view toggles.
-   - **Floating Icon Toolbar** suspended at the top-center of the workspace with quick tool icons (`➕ Add (A)`, `↖ Select`, `✥ Board`, `⊙ Pin`, `⋮⋮ Header`, `〰 Wire`, `☍ Solder`, `⊗ Cut`, `⌫ Erase`).
+   - **Floating Icon Toolbar** suspended at the top-center of the workspace with Add, Select, Move, Pin, Header, Wire, Solder, Cut, Erase, Ghost, and Flip tools. Icons are painted as vector geometry, so no system fonts or emoji fonts are required.
    - **Unified Add Dialog (`A` or `Right-Click → Add Board / Component...`)**: Browse and place Perfboards/Stripboards/Breadboards, Single Pins, Parametric Headers, and Standard Library Components from one dialog.
    - **Multi-Selection & Clear All**: Press `Ctrl+A` / `Cmd+A` to select all boards, components, wires, and solder traces at once (`Del` to delete all selected), or use `Clear All` to wipe the plane completely empty.
+   - **Double-click to Add**: Double-click a board, component, single-pin entry, or parametric-header entry to enter placement mode. The explicit Place buttons remain available.
+   - **Move Selection (`M`)**: Select an item or group, press `M`, move the pointer, and click to place. `Esc` or right-click cancels; a completed move is one undo action. With nothing selected, `M` enables board dragging.
+   - **Quick Component Copies**: `Ctrl+C` / `Cmd+C` copies selected components to the in-app component clipboard; `Ctrl+V` / `Cmd+V` attaches copies to the pointer. Click to place on free holes, or `Esc` to cancel. Copies preserve relative spacing, rotation, labels, and colors and receive new IDs and reference designators. Text fields keep their usual text-copy/paste behavior.
 
 2. **KiCad-Inspired Dual Control Modes (Touchpad & Mouse)**
    - Switch between **Touchpad (KiCad Pan/Pinch)** and **Mouse (Wheel Zoom / Mid-Pan)** at any time via the dropdown in the bottom-right status bar.
@@ -23,13 +26,17 @@
 4. **Connector Pins, Parametric Headers & Standard Footprint Library**
    - **Single Connector Pins (`P`)**: Round or square-pad single pins.
    - **Parametric Header Lines (`H`)**: Arbitrary `N × M` male or female pin headers (`1×2` through `4×40`).
-   - **Standard Component Library (`L`)**:
+   - **Standard Component Library (`A`)**:
      - **JST-XH Shrouded Connectors (`2P`–`8P`)**: Accurately renders the 2D shrouded housing and models physical side-wall overhang that blocks 1 hole on each side of the pin row.
      - **Screw Terminals (`5.08mm` 2-Pole & 3-Pole)**, **DIP IC Sockets (`DIP-8`, `DIP-14`, `DIP-16`)**, **Axial Resistors**, **TO-220**, and **6×6mm Tactile Switches**.
 
 5. **Wires (Straight & Spline) & Solder Traces**
    - **Wires (`W`)**: Must start and end at board holes while allowing arbitrary intermediate waypoints in between. Switch between **Straight (angled polyline)** and **Smooth Catmull-Rom Spline** routing (`Tab` while routing, or toggle per wire in the Inspector).
    - **Solder Connections (`S`)**: Drag or click across neighbor holes to create metallic solder bridges/traces. Soldered holes block new connector pins while still allowing other solder lines to connect onto them.
+
+6. **Ghost Mode & Solder-Side View**
+   - **Ghost (`G`)** makes component housings transparent enough to inspect holes and solder underneath. It is enabled automatically while routing wires, drawing solder, or cutting tracks; leaving the tool restores the manual ghost preference.
+   - **Flip (`F`)** turns the workspace over into a horizontally mirrored solder-side view, keeping identifiers readable and hole coordinates unchanged. Components appear transparent and solder-side wires/traces are drawn in front. Pan, zoom, picking, and placement use the mirrored coordinates. This is a view change, not a destructive edit or a physical component flip.
 
 ## Building & Running with Nix
 
@@ -43,3 +50,14 @@ nix run
 # Build the release package via Nix
 nix build
 ```
+
+## Checks
+
+```bash
+nix develop --command cargo test
+nix develop --command cargo-clippy clippy --all-targets -- -D warnings
+```
+
+Tests cover double-click placement with simulated pointer events, keyboard commands,
+move/paste validation and undo/cancel behavior, automatic ghost mode, mirrored camera
+transforms, headless rendering of both sides, and font-independent icon geometry.
