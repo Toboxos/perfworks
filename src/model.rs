@@ -220,6 +220,131 @@ impl BoardTheme {
     }
 }
 
+/// Physical substrate extents of a board, in millimetres.
+///
+/// Deliberately stored as *margins beyond the outermost hole centres* rather than as an
+/// overall width/height. The hole lattice stays the single source of truth for topology;
+/// this only says how much FR4 surrounds it. Resizing a board by columns or rows therefore
+/// keeps its real-world border intact instead of silently rescaling it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BoardOutline {
+    /// Substrate beyond the first/last hole centre, left and right
+    pub margin_x_mm: f32,
+    /// Substrate beyond the first/last hole centre, top and bottom
+    pub margin_y_mm: f32,
+    /// Substrate thickness (1.6mm for standard FR4)
+    pub thickness_mm: f32,
+    /// Rounded corner radius of the board outline
+    pub corner_radius_mm: f32,
+}
+
+impl Default for BoardOutline {
+    /// The generic protoboard family measured from the common 5×7 / 4×6 / 3×7 / 2×8cm kit:
+    /// every one of those boards has the same 5.8mm side and 3.6mm top/bottom border.
+    fn default() -> Self {
+        Self {
+            margin_x_mm: 5.8,
+            margin_y_mm: 3.6,
+            thickness_mm: 1.6,
+            corner_radius_mm: 1.0,
+        }
+    }
+}
+
+impl BoardOutline {
+    /// Overall substrate size in mm for a hole field of `cols` × `rows`.
+    pub fn size_mm(&self, cols: u32, rows: u32) -> (f32, f32) {
+        let span = |n: u32| (n.max(1) - 1) as f32 * PITCH_MM;
+        (
+            span(cols) + 2.0 * self.margin_x_mm,
+            span(rows) + 2.0 * self.margin_y_mm,
+        )
+    }
+
+    /// Margins expressed in pitch units, for the renderer and world-space bounds.
+    pub fn margin_pitch(&self) -> (f32, f32) {
+        (self.margin_x_mm / PITCH_MM, self.margin_y_mm / PITCH_MM)
+    }
+}
+
+/// Corner mounting hole geometry, in millimetres.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MountingSpec {
+    /// Hole centre inset from each board edge
+    pub inset_mm: f32,
+    /// Drill diameter — this is the number that has to match a real standoff
+    pub drill_mm: f32,
+    /// Annular copper pad diameter (cosmetic; not exported as geometry)
+    pub pad_mm: f32,
+}
+
+impl Default for MountingSpec {
+    /// M3 clearance, the standard for this board family.
+    fn default() -> Self {
+        Self {
+            inset_mm: 3.5,
+            drill_mm: 3.2,
+            pad_mm: 6.0,
+        }
+    }
+}
+
+/// Which side of the board an oversized edge pad strip sits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EdgeSide {
+    Left,
+    Right,
+}
+
+impl EdgeSide {
+    pub const ALL: [EdgeSide; 2] = [EdgeSide::Left, EdgeSide::Right];
+
+    pub fn prefix(self) -> char {
+        match self {
+            EdgeSide::Left => 'L',
+            EdgeSide::Right => 'R',
+        }
+    }
+}
+
+/// Oversized elongated solder pads running down the left and right board edges.
+///
+/// Real protoboards space these at roughly 1.5 row pitches, which would put them off the
+/// integer lattice the whole model is built on. We instead place exactly one per row, two
+/// pitches outboard of the hole field, so they behave as ordinary solderable holes
+/// everywhere — netlist, hit-testing, DRC — at the cost of a cosmetic difference in pad
+/// count. Nothing mounts to them, so the deviation is harmless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct EdgePads {
+    pub left: bool,
+    pub right: bool,
+}
+
+impl EdgePads {
+    pub const NONE: EdgePads = EdgePads {
+        left: false,
+        right: false,
+    };
+    pub const BOTH: EdgePads = EdgePads {
+        left: true,
+        right: true,
+    };
+
+    pub fn enabled(self, side: EdgeSide) -> bool {
+        match side {
+            EdgeSide::Left => self.left,
+            EdgeSide::Right => self.right,
+        }
+    }
+
+    pub fn any(self) -> bool {
+        self.left || self.right
+    }
+}
+
+/// How far outboard of the hole field the edge pad strips sit, in pitch units.
+pub const EDGE_PAD_OFFSET: i32 = 2;
+
 /// A perfboard, stripboard, or breadboard placed on the workspace plane
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Perfboard {
@@ -245,6 +370,15 @@ pub struct Perfboard {
     pub track_cuts: Vec<GridPos>,
     /// Show corner mounting holes
     pub mounting_holes: bool,
+    /// Physical substrate extents. Defaulted so projects saved before it existed still load.
+    #[serde(default)]
+    pub outline: BoardOutline,
+    /// Corner mounting hole geometry, used when `mounting_holes` is set
+    #[serde(default)]
+    pub mounting: MountingSpec,
+    /// Oversized solder pads along the left/right board edges
+    #[serde(default)]
+    pub edge_pads: EdgePads,
 }
 
 impl Perfboard {
@@ -262,6 +396,9 @@ impl Perfboard {
             theme: BoardTheme::ClassicGreen,
             track_cuts: Vec::new(),
             mounting_holes: true,
+            outline: BoardOutline::default(),
+            mounting: MountingSpec::default(),
+            edge_pads: EdgePads::default(),
         }
     }
 
@@ -284,23 +421,98 @@ impl Perfboard {
         }
     }
 
-    /// Check if a global grid position lies on this board
+    /// Check if a global grid position lies on this board's hole *matrix*.
+    ///
+    /// Deliberately excludes edge pads: callers that mean "is there copper to solder to"
+    /// want [`Perfboard::provides_hole`], while callers that mean "which row/column is
+    /// this" want the matrix only.
     pub fn contains_global_hole(&self, global: GridPos) -> bool {
         self.global_to_local(global).is_some()
     }
 
-    /// World-space bounding box of the physical board rectangle (including margin around edge holes)
+    /// Column index of an edge pad strip, in board-local coordinates.
+    pub fn edge_pad_col(&self, side: EdgeSide) -> i32 {
+        match side {
+            EdgeSide::Left => -EDGE_PAD_OFFSET,
+            EdgeSide::Right => self.cols as i32 - 1 + EDGE_PAD_OFFSET,
+        }
+    }
+
+    /// Global positions of every enabled edge pad, one per row.
+    pub fn edge_pad_holes(&self) -> Vec<GridPos> {
+        let mut out = Vec::new();
+        for side in EdgeSide::ALL {
+            if !self.edge_pads.enabled(side) {
+                continue;
+            }
+            let c = self.edge_pad_col(side);
+            for r in 0..self.rows as i32 {
+                out.push(self.local_to_global(GridPos::new(c, r)));
+            }
+        }
+        out
+    }
+
+    /// Which edge pad, if any, a global position refers to.
+    pub fn edge_pad_at(&self, global: GridPos) -> Option<(EdgeSide, i32)> {
+        let row = global.row - self.origin.row;
+        if row < 0 || row >= self.rows as i32 {
+            return None;
+        }
+        EdgeSide::ALL.into_iter().find_map(|side| {
+            (self.edge_pads.enabled(side)
+                && global.col - self.origin.col == self.edge_pad_col(side))
+            .then_some((side, row))
+        })
+    }
+
+    /// Every solderable hole this board offers: the matrix plus any edge pads.
+    pub fn provides_hole(&self, global: GridPos) -> bool {
+        self.contains_global_hole(global) || self.edge_pad_at(global).is_some()
+    }
+
+    /// World-space bounding box of the physical substrate, derived from [`BoardOutline`].
+    ///
+    /// Edge pads sit inside this rectangle rather than extending it — that is what the
+    /// side margin is for on a real board.
     pub fn world_bounds(&self) -> (WorldPos, WorldPos) {
-        let margin = 1.15;
-        let min = WorldPos::new(
-            self.origin.col as f32 - margin,
-            self.origin.row as f32 - margin,
-        );
+        let (mx, my) = self.outline.margin_pitch();
+        let min = WorldPos::new(self.origin.col as f32 - mx, self.origin.row as f32 - my);
         let max = WorldPos::new(
-            (self.origin.col + self.cols as i32 - 1) as f32 + margin,
-            (self.origin.row + self.rows as i32 - 1) as f32 + margin,
+            (self.origin.col + self.cols as i32 - 1) as f32 + mx,
+            (self.origin.row + self.rows as i32 - 1) as f32 + my,
         );
         (min, max)
+    }
+
+    /// Overall substrate size in millimetres.
+    pub fn size_mm(&self) -> (f32, f32) {
+        self.outline.size_mm(self.cols, self.rows)
+    }
+
+    /// Mounting hole centres in board-local millimetres, origin at the top-left substrate
+    /// corner, X right and Y down. Empty when the board has no mounting holes.
+    pub fn mounting_centers_mm(&self) -> Vec<(f32, f32)> {
+        if !self.mounting_holes {
+            return Vec::new();
+        }
+        let (w, h) = self.size_mm();
+        let i = self.mounting.inset_mm;
+        // A board too small to carry a corner hole without eating into the hole field.
+        if w < 4.0 * i || h < 4.0 * i {
+            return Vec::new();
+        }
+        vec![(i, i), (w - i, i), (i, h - i), (w - i, h - i)]
+    }
+
+    /// Board-local millimetre position of a global hole, measured from the top-left
+    /// substrate corner. This is the frame STEP and image export both work in.
+    pub fn hole_to_local_mm(&self, global: GridPos) -> (f32, f32) {
+        let (mx, my) = (self.outline.margin_x_mm, self.outline.margin_y_mm);
+        (
+            (global.col - self.origin.col) as f32 * PITCH_MM + mx,
+            (global.row - self.origin.row) as f32 * PITCH_MM + my,
+        )
     }
 
     pub fn contains_world_pos(&self, pos: WorldPos) -> bool {
@@ -318,6 +530,21 @@ impl Perfboard {
             style => style.format_index(local.row as u32),
         };
         format!("{}{}", row_str, col_str)
+    }
+
+    /// Human-readable name for any hole this board provides, including edge pads
+    /// (`L3`, `R12`), which have no column in the matrix to name them by.
+    pub fn format_global_hole(&self, global: GridPos) -> Option<String> {
+        if let Some(local) = self.global_to_local(global) {
+            return Some(self.format_hole_coord(local));
+        }
+        self.edge_pad_at(global).map(|(side, row)| {
+            let row_str = match self.row_label_style {
+                AxisLabelStyle::Hidden => index_to_letters(row as u32, true),
+                style => style.format_index(row as u32),
+            };
+            format!("{}{}", side.prefix(), row_str)
+        })
     }
 }
 
@@ -402,19 +629,11 @@ impl RgbColor {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ConnectorKind {
     /// Single connector pin in 1 hole
-    SinglePin {
-        square_pad: bool,
-    },
+    SinglePin { square_pad: bool },
     /// Parametric pin header (`cols` x `rows`, e.g., 1xN or 2xN)
-    HeaderLine {
-        cols: u32,
-        rows: u32,
-        female: bool,
-    },
+    HeaderLine { cols: u32, rows: u32, female: bool },
     /// Standard library component footprint (e.g. JST-XH, Screw Terminal, DIP Socket, etc.)
-    LibraryFootprint {
-        footprint_id: String,
-    },
+    LibraryFootprint { footprint_id: String },
 }
 
 /// A placed connector / pin / component on the grid
@@ -738,7 +957,36 @@ impl SolderLine {
     }
 }
 
-/// Occupancy status of a single grid hole
+/// A user-authored net name, anchored to a board hole.
+///
+/// Nets themselves are *derived* from geometry on every rebuild and therefore have no
+/// stable identity to hang a name on. Anchoring the name to a hole instead makes both
+/// naming behaviours fall out of the union-find with no special cases: wiring an unnamed
+/// group onto a labelled hole absorbs it into that net, and bridging two differently
+/// labelled nets produces one net holding two names — a conflict, by definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetLabel {
+    pub id: Uuid,
+    pub hole: GridPos,
+    pub name: String,
+}
+
+impl NetLabel {
+    pub fn new(hole: GridPos, name: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            hole,
+            name: name.into(),
+        }
+    }
+}
+
+/// Mechanical occupancy status of a single grid hole.
+///
+/// This answers "can a pin physically go here", *not* "what is this connected to" —
+/// electrical connectivity lives in [`crate::netlist::Netlist`]. A hole under a JST side
+/// wall is blocked here and connected to nothing there; a hole on a powered strip is the
+/// reverse. The two are orthogonal and neither replaces the other.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HoleOccupancy {
     /// Board this hole belongs to (if any)
@@ -749,8 +997,6 @@ pub struct HoleOccupancy {
     pub blocked_by_housing: Option<(Uuid, String)>, // (connector_id, designator)
     /// Solder lines passing through this hole
     pub solder_lines: Vec<Uuid>,
-    /// Wires starting or ending at this hole
-    pub wire_endpoints: Vec<Uuid>,
     /// Stripboard track cut at this hole
     pub has_track_cut: bool,
 }
@@ -794,6 +1040,9 @@ pub struct Project {
     pub connectors: Vec<PlacedConnector>,
     pub wires: Vec<Wire>,
     pub solder_lines: Vec<SolderLine>,
+    /// User-authored net names. `serde(default)` so projects saved before nets existed still load.
+    #[serde(default)]
+    pub net_labels: Vec<NetLabel>,
     next_designator_counter: u32,
 }
 
@@ -811,6 +1060,7 @@ impl Project {
             connectors: Vec::new(),
             wires: Vec::new(),
             solder_lines: Vec::new(),
+            net_labels: Vec::new(),
             next_designator_counter: 1,
         }
     }
@@ -829,7 +1079,8 @@ impl Project {
         breakout_board.row_label_style = AxisLabelStyle::LettersUpper;
         breakout_board.kind = BoardKind::StripboardHorizontal;
         breakout_board.theme = BoardTheme::PhenolicAmber;
-        breakout_board.track_cuts = vec![GridPos::new(5, 3), GridPos::new(5, 4), GridPos::new(5, 5)];
+        breakout_board.track_cuts =
+            vec![GridPos::new(5, 3), GridPos::new(5, 4), GridPos::new(5, 5)];
 
         let jst_power = PlacedConnector {
             id: Uuid::new_v4(),
@@ -1063,6 +1314,12 @@ impl Project {
                 solder_gnd_branch,
                 solder_mcu_pads,
             ],
+            net_labels: vec![
+                NetLabel::new(GridPos::new(2, 2), "VCC"),
+                NetLabel::new(GridPos::new(3, 2), "GND"),
+                NetLabel::new(GridPos::new(12, 2), "I2C_SDA"),
+                NetLabel::new(GridPos::new(13, 2), "I2C_SCL"),
+            ],
             next_designator_counter: 10,
         }
     }
@@ -1073,18 +1330,13 @@ impl Project {
         d
     }
 
+    /// The topmost board offering a solderable hole at `global` — matrix hole or edge pad.
     pub fn find_board_at_hole(&self, global: GridPos) -> Option<&Perfboard> {
-        self.boards
-            .iter()
-            .rev()
-            .find(|b| b.contains_global_hole(global))
+        self.boards.iter().rev().find(|b| b.provides_hole(global))
     }
 
     pub fn find_board_at_world(&self, pos: WorldPos) -> Option<&Perfboard> {
-        self.boards
-            .iter()
-            .rev()
-            .find(|b| b.contains_world_pos(pos))
+        self.boards.iter().rev().find(|b| b.contains_world_pos(pos))
     }
 
     /// Evaluate the complete hole occupancy state at `global`
@@ -1122,19 +1374,11 @@ impl Project {
             .map(|s| s.id)
             .collect();
 
-        let wire_endpoints = self
-            .wires
-            .iter()
-            .filter(|w| w.start_hole == global || w.end_hole == global)
-            .map(|w| w.id)
-            .collect();
-
         HoleOccupancy {
             board_id,
             pin_owner,
             blocked_by_housing,
             solder_lines,
-            wire_endpoints,
             has_track_cut,
         }
     }

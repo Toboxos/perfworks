@@ -17,6 +17,18 @@ pub enum CadIcon {
     Rotate,
 }
 
+/// Point size of toolbar button captions. Exposed so the layout guard in `app` can
+/// measure captions against [`TOOLBAR_BUTTON_SIZE`] with the font actually used.
+pub const TOOLBAR_CAPTION_POINTS: f32 = 10.5;
+
+/// Horizontal padding reserved inside a toolbar button so captions never touch the edge.
+pub const TOOLBAR_CAPTION_PADDING: f32 = 6.0;
+
+/// Toolbar button footprint. Wide enough for the longest caption including its shortcut
+/// (`Header (H)`, ~49px) with headroom; a test asserts this rather than leaving it to
+/// eyeballing, since this environment cannot screenshot the window.
+pub const TOOLBAR_BUTTON_SIZE: Vec2 = Vec2::new(70.0, 46.0);
+
 /// Renders an Autodesk Fusion-style floating toolbar button with a crisp vector icon above a text caption
 pub fn toolbar_icon_button(
     ui: &mut Ui,
@@ -25,8 +37,7 @@ pub fn toolbar_icon_button(
     active: bool,
     accent: bool,
 ) -> Response {
-    let desired_size = Vec2::new(56.0, 46.0);
-    let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
+    let (rect, response) = ui.allocate_exact_size(TOOLBAR_BUTTON_SIZE, Sense::click());
 
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
@@ -72,7 +83,7 @@ pub fn toolbar_icon_button(
             text_pos,
             egui::Align2::CENTER_CENTER,
             caption,
-            FontId::proportional(10.5),
+            FontId::proportional(TOOLBAR_CAPTION_POINTS),
             fg_color,
         );
     }

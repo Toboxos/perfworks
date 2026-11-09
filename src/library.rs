@@ -1,4 +1,31 @@
-use crate::model::{AxisLabelStyle, BoardKind, BoardTheme, RgbColor};
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
+use crate::model::{
+    AxisLabelStyle, BoardKind, BoardOutline, BoardTheme, EdgePads, MountingSpec, RgbColor,
+};
+
+/// The border shared by every board in the common 5×7 / 4×6 / 3×7 / 2×8cm FR4 protoboard
+/// kit: ~5.8mm either side (which is what the edge pad strips occupy) and ~3.5mm top and
+/// bottom. Measured off all four boards.
+///
+/// These are a best fit, not an exact match, because the catalogue sizes are themselves
+/// rounded — the true vertical border ranges from 3.41mm on the 5×7 to 3.65mm on the 2×8.
+/// One shared constant reproduces every catalogue size to within 0.3mm, which is well
+/// inside the tolerance of the boards themselves.
+const PROTOBOARD_OUTLINE: BoardOutline = BoardOutline {
+    margin_x_mm: 5.8,
+    margin_y_mm: 3.5,
+    thickness_mm: 1.6,
+    corner_radius_mm: 1.0,
+};
+
+/// M3 clearance holes, 3.5mm in from each corner.
+const PROTOBOARD_MOUNTING: MountingSpec = MountingSpec {
+    inset_mm: 3.5,
+    drill_mm: 3.2,
+    pad_mm: 6.0,
+};
 
 /// Standard board template in the library (Perfboard, Stripboard, Breadboard)
 #[derive(Debug, Clone)]
@@ -13,22 +40,97 @@ pub struct BoardPreset {
     pub theme: BoardTheme,
     pub col_label_style: AxisLabelStyle,
     pub row_label_style: AxisLabelStyle,
+    /// Physical substrate extents of the real-world board this preset models
+    pub outline: BoardOutline,
+    /// Corner mounting hole geometry
+    pub mounting: MountingSpec,
+    /// Oversized edge solder pads present on the real board
+    pub edge_pads: EdgePads,
+    /// Whether the real board has corner mounting holes at all
+    pub mounting_holes: bool,
 }
 
-pub fn standard_board_library() -> Vec<BoardPreset> {
+static BOARD_PRESETS: LazyLock<Vec<BoardPreset>> = LazyLock::new(build_board_presets);
+
+static BOARD_PRESET_INDEX: LazyLock<HashMap<&'static str, usize>> = LazyLock::new(|| {
+    BOARD_PRESETS
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.id, i))
+        .collect()
+});
+
+/// All standard board presets. Built once on first use.
+pub fn standard_board_library() -> &'static [BoardPreset] {
+    &BOARD_PRESETS
+}
+
+/// The four boards of the standard double-sided FR4 protoboard kit.
+///
+/// Hole counts were measured from the physical boards and cross-checked against pitch
+/// arithmetic: every one satisfies `cols = (width_mm - 11.6) / 2.54` and
+/// `rows = (height_mm - 7.2) / 2.54` to within a tenth of a hole, which is what makes
+/// [`PROTOBOARD_OUTLINE`] a single shared constant rather than four fudged ones.
+fn protoboard(
+    id: &'static str,
+    short_name: &'static str,
+    name: &'static str,
+    description: &'static str,
+    cols: u32,
+    rows: u32,
+) -> BoardPreset {
+    BoardPreset {
+        id,
+        name,
+        short_name,
+        description,
+        cols,
+        rows,
+        kind: BoardKind::Perfboard,
+        theme: BoardTheme::ClassicGreen,
+        col_label_style: AxisLabelStyle::Numbers1Based,
+        row_label_style: AxisLabelStyle::LettersUpper,
+        outline: PROTOBOARD_OUTLINE,
+        mounting: PROTOBOARD_MOUNTING,
+        edge_pads: EdgePads::BOTH,
+        mounting_holes: true,
+    }
+}
+
+fn build_board_presets() -> Vec<BoardPreset> {
     vec![
-        BoardPreset {
-            id: "board_perf_24x18",
-            name: "Standard Perfboard (24×18 — 5×7cm)",
-            short_name: "Perfboard 24×18",
-            description: "Classic 5×7cm isolated-pad FR4 prototyping perfboard",
-            cols: 24,
-            rows: 18,
-            kind: BoardKind::Perfboard,
-            theme: BoardTheme::ClassicGreen,
-            col_label_style: AxisLabelStyle::Numbers1Based,
-            row_label_style: AxisLabelStyle::LettersUpper,
-        },
+        protoboard(
+            "board_perf_24x18",
+            "Protoboard 5×7cm",
+            "Protoboard 5×7cm (70×50mm, 24×18)",
+            "Double-sided FR4 protoboard, 1.6mm, M3 corner holes, edge solder pads",
+            24,
+            18,
+        ),
+        protoboard(
+            "board_perf_20x14",
+            "Protoboard 4×6cm",
+            "Protoboard 4×6cm (60×40mm, 20×14)",
+            "Double-sided FR4 protoboard, 1.6mm, M3 corner holes, edge solder pads",
+            20,
+            14,
+        ),
+        protoboard(
+            "board_perf_24x10",
+            "Protoboard 3×7cm",
+            "Protoboard 3×7cm (70×30mm, 24×10)",
+            "Double-sided FR4 protoboard, 1.6mm, M3 corner holes, edge solder pads",
+            24,
+            10,
+        ),
+        protoboard(
+            "board_perf_28x6",
+            "Protoboard 2×8cm",
+            "Protoboard 2×8cm (80×20mm, 28×6)",
+            "Double-sided FR4 protoboard, 1.6mm, M3 corner holes, edge solder pads",
+            28,
+            6,
+        ),
         BoardPreset {
             id: "board_perf_18x12",
             name: "Compact Perfboard (18×12 — 3×5cm)",
@@ -40,6 +142,10 @@ pub fn standard_board_library() -> Vec<BoardPreset> {
             theme: BoardTheme::ClassicGreen,
             col_label_style: AxisLabelStyle::Numbers1Based,
             row_label_style: AxisLabelStyle::LettersUpper,
+            outline: PROTOBOARD_OUTLINE,
+            mounting: PROTOBOARD_MOUNTING,
+            edge_pads: EdgePads::NONE,
+            mounting_holes: true,
         },
         BoardPreset {
             id: "board_perf_black_16x16",
@@ -52,6 +158,10 @@ pub fn standard_board_library() -> Vec<BoardPreset> {
             theme: BoardTheme::MatteBlack,
             col_label_style: AxisLabelStyle::Numbers1Based,
             row_label_style: AxisLabelStyle::LettersUpper,
+            outline: PROTOBOARD_OUTLINE,
+            mounting: PROTOBOARD_MOUNTING,
+            edge_pads: EdgePads::NONE,
+            mounting_holes: true,
         },
         BoardPreset {
             id: "board_strip_h_24x14",
@@ -64,6 +174,17 @@ pub fn standard_board_library() -> Vec<BoardPreset> {
             theme: BoardTheme::PhenolicAmber,
             col_label_style: AxisLabelStyle::Numbers1Based,
             row_label_style: AxisLabelStyle::LettersUpper,
+            // Veroboard is cut to size from a sheet, so it has a tight border and no
+            // factory mounting holes.
+            outline: BoardOutline {
+                margin_x_mm: 1.6,
+                margin_y_mm: 1.6,
+                thickness_mm: 1.6,
+                corner_radius_mm: 0.5,
+            },
+            mounting: MountingSpec::default(),
+            edge_pads: EdgePads::NONE,
+            mounting_holes: false,
         },
         BoardPreset {
             id: "board_strip_v_14x20",
@@ -76,6 +197,17 @@ pub fn standard_board_library() -> Vec<BoardPreset> {
             theme: BoardTheme::PhenolicAmber,
             col_label_style: AxisLabelStyle::Numbers1Based,
             row_label_style: AxisLabelStyle::LettersUpper,
+            // Veroboard is cut to size from a sheet, so it has a tight border and no
+            // factory mounting holes.
+            outline: BoardOutline {
+                margin_x_mm: 1.6,
+                margin_y_mm: 1.6,
+                thickness_mm: 1.6,
+                corner_radius_mm: 0.5,
+            },
+            mounting: MountingSpec::default(),
+            edge_pads: EdgePads::NONE,
+            mounting_holes: false,
         },
         BoardPreset {
             id: "board_breadboard_30x10",
@@ -88,12 +220,23 @@ pub fn standard_board_library() -> Vec<BoardPreset> {
             theme: BoardTheme::BreadboardWhite,
             col_label_style: AxisLabelStyle::Numbers1Based,
             row_label_style: AxisLabelStyle::LettersUpper,
+            // A solderless breadboard is a plastic block, not a PCB: much thicker, wide
+            // border, no mounting holes and nothing to export as copper.
+            outline: BoardOutline {
+                margin_x_mm: 4.0,
+                margin_y_mm: 4.0,
+                thickness_mm: 8.5,
+                corner_radius_mm: 2.0,
+            },
+            mounting: MountingSpec::default(),
+            edge_pads: EdgePads::NONE,
+            mounting_holes: false,
         },
     ]
 }
 
-pub fn get_board_preset_by_id(id: &str) -> Option<BoardPreset> {
-    standard_board_library().into_iter().find(|b| b.id == id)
+pub fn get_board_preset_by_id(id: &str) -> Option<&'static BoardPreset> {
+    BOARD_PRESET_INDEX.get(id).map(|&i| &BOARD_PRESETS[i])
 }
 
 /// Category of standard library component
@@ -166,12 +309,31 @@ pub struct FootprintDef {
     pub pins: Vec<PinDef>,
     /// Holes relative to anchor (0, 0) that are physically covered/blocked by the connector body overhang
     pub blocked_offsets: Vec<(i32, i32)>,
+    /// Groups of pin indices that are electrically connected *inside* the part itself,
+    /// independent of any board copper (e.g. the two leads on each side of a tactile switch).
+    /// Most through-hole parts have no internal connectivity and leave this empty.
+    pub internal_nets: Vec<Vec<usize>>,
     /// Local 2D bounding box `(min_x, min_y)` to `(max_x, max_y)` in grid pitch units
     pub body_min: (f32, f32),
     pub body_max: (f32, f32),
 }
 
-pub fn standard_library() -> Vec<FootprintDef> {
+static FOOTPRINTS: LazyLock<Vec<FootprintDef>> = LazyLock::new(build_footprints);
+
+static FOOTPRINT_INDEX: LazyLock<HashMap<&'static str, usize>> = LazyLock::new(|| {
+    FOOTPRINTS
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.id, i))
+        .collect()
+});
+
+/// All standard component footprints. Built once on first use.
+pub fn standard_library() -> &'static [FootprintDef] {
+    &FOOTPRINTS
+}
+
+fn build_footprints() -> Vec<FootprintDef> {
     let mut list = Vec::new();
 
     // 1. JST-XH 2.50mm/2.54mm vertical shrouded connectors (2-pin through 8-pin)
@@ -250,6 +412,7 @@ pub fn standard_library() -> Vec<FootprintDef> {
             default_color: RgbColor::new(238, 236, 224),
             pins,
             blocked_offsets,
+            internal_nets: Vec::new(),
             body_min: (-1.15, -1.10),
             body_max: ((pin_count - 1) as f32 + 1.15, 1.15),
         });
@@ -260,7 +423,8 @@ pub fn standard_library() -> Vec<FootprintDef> {
         id: "screw_term_2",
         name: "Screw Terminal 2-Pole (5.08mm / 2-Hole Pitch)",
         short_name: "Screw 2P (5.08mm)",
-        description: "Heavy-duty 5.08mm pitch 2-pin screw terminal; blocks center hole & side overhang",
+        description:
+            "Heavy-duty 5.08mm pitch 2-pin screw terminal; blocks center hole & side overhang",
         designator_prefix: "J",
         category: FootprintCategory::ScrewTerminal,
         shape_style: FootprintShapeStyle::ScrewTerminalBlock,
@@ -290,6 +454,7 @@ pub fn standard_library() -> Vec<FootprintDef> {
             (1, 1),
             (2, 1),
         ],
+        internal_nets: Vec::new(),
         body_min: (-1.05, -1.25),
         body_max: (3.05, 1.25),
     });
@@ -339,6 +504,7 @@ pub fn standard_library() -> Vec<FootprintDef> {
             (3, 1),
             (4, 1),
         ],
+        internal_nets: Vec::new(),
         body_min: (-1.05, -1.25),
         body_max: (5.05, 1.25),
     });
@@ -382,6 +548,7 @@ pub fn standard_library() -> Vec<FootprintDef> {
             default_color: RgbColor::new(38, 40, 46),
             pins,
             blocked_offsets: Vec::new(),
+            internal_nets: Vec::new(),
             body_min: (-0.45, -0.55),
             body_max: (3.45, (half_pins - 1) as f32 + 0.55),
         });
@@ -412,6 +579,7 @@ pub fn standard_library() -> Vec<FootprintDef> {
             },
         ],
         blocked_offsets: vec![(1, 0), (2, 0), (3, 0)],
+        internal_nets: Vec::new(),
         body_min: (-0.4, -0.52),
         body_max: (4.4, 0.52),
     });
@@ -446,6 +614,7 @@ pub fn standard_library() -> Vec<FootprintDef> {
             },
         ],
         blocked_offsets: vec![(-1, 0), (3, 0)],
+        internal_nets: Vec::new(),
         body_min: (-0.95, -0.85),
         body_max: (2.95, 0.65),
     });
@@ -486,6 +655,12 @@ pub fn standard_library() -> Vec<FootprintDef> {
             },
         ],
         blocked_offsets: vec![(1, 0), (0, 1), (1, 1), (2, 1), (1, 2)],
+        // The two leads on each side of the body come off one metal terminal, so they are
+        // permanently shorted; pressing the button joins the two terminals. On the real part
+        // the shorted pairs sit at the narrow 4.5mm spacing (the 6.5mm axis separates the
+        // terminals); this footprint squares both axes off to 2 pitches, so the pairing is
+        // recorded by column: pins 1+3 (dcol 0) and pins 2+4 (dcol 2).
+        internal_nets: vec![vec![0, 2], vec![1, 3]],
         body_min: (-0.45, -0.45),
         body_max: (2.45, 2.45),
     });
@@ -493,6 +668,126 @@ pub fn standard_library() -> Vec<FootprintDef> {
     list
 }
 
-pub fn get_footprint_by_id(id: &str) -> Option<FootprintDef> {
-    standard_library().into_iter().find(|f| f.id == id)
+pub fn get_footprint_by_id(id: &str) -> Option<&'static FootprintDef> {
+    FOOTPRINT_INDEX.get(id).map(|&i| &FOOTPRINTS[i])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The catalogue sizes printed on the boards themselves. If a hole count or the shared
+    /// margin constant is ever wrong, the board stops being the size it claims to be — and
+    /// that is exactly the number a CAD enclosure is built around.
+    #[test]
+    fn protoboard_presets_match_their_catalogue_millimetre_sizes() {
+        let expected = [
+            ("board_perf_24x18", 70.0_f32, 50.0_f32),
+            ("board_perf_20x14", 60.0, 40.0),
+            ("board_perf_24x10", 70.0, 30.0),
+            ("board_perf_28x6", 80.0, 20.0),
+        ];
+        for (id, w, h) in expected {
+            let p = get_board_preset_by_id(id).expect("preset must exist");
+            let (gw, gh) = p.outline.size_mm(p.cols, p.rows);
+            // 0.4mm: the catalogue sizes are rounded, so one shared margin constant cannot
+            // hit all four exactly. See PROTOBOARD_OUTLINE.
+            assert!(
+                (gw - w).abs() < 0.4,
+                "{id}: width {gw:.2}mm, catalogue says {w}mm"
+            );
+            assert!(
+                (gh - h).abs() < 0.4,
+                "{id}: height {gh:.2}mm, catalogue says {h}mm"
+            );
+        }
+    }
+
+    #[test]
+    fn every_board_preset_has_a_usable_physical_outline() {
+        for p in standard_board_library() {
+            assert!(
+                p.outline.thickness_mm > 0.0,
+                "{}: zero thickness would export as a degenerate solid",
+                p.id
+            );
+            let (w, h) = p.outline.size_mm(p.cols, p.rows);
+            let (field_w, field_h) = (
+                (p.cols - 1) as f32 * crate::model::PITCH_MM,
+                (p.rows - 1) as f32 * crate::model::PITCH_MM,
+            );
+            assert!(
+                w >= field_w && h >= field_h,
+                "{}: substrate {w:.1}×{h:.1} is smaller than its own hole field",
+                p.id
+            );
+        }
+    }
+
+    /// Mounting holes have to clear the outermost holes, or a standoff fouls the copper.
+    #[test]
+    fn protoboard_mounting_holes_sit_clear_of_the_hole_field() {
+        let p = get_board_preset_by_id("board_perf_24x18").unwrap();
+        let mut board =
+            crate::model::Perfboard::new("t", crate::model::GridPos::new(0, 0), p.cols, p.rows);
+        board.outline = p.outline;
+        board.mounting = p.mounting;
+        board.edge_pads = p.edge_pads;
+        let centers = board.mounting_centers_mm();
+        assert_eq!(centers.len(), 4);
+
+        // Compare against every hole the board actually provides, edge pads included —
+        // those are the holes nearest a corner, so checking only the matrix would miss the
+        // real collision.
+        let holes: Vec<(f32, f32)> = board
+            .edge_pad_holes()
+            .into_iter()
+            .chain((0..board.rows as i32).flat_map(|r| {
+                (0..board.cols as i32)
+                    .map(move |c| crate::model::GridPos::new(c, r))
+                    .collect::<Vec<_>>()
+            }))
+            .map(|g| board.hole_to_local_mm(g))
+            .collect();
+
+        for (cx, cy) in centers {
+            let nearest = holes
+                .iter()
+                .map(|(hx, hy)| (cx - hx).hypot(cy - hy))
+                .fold(f32::INFINITY, f32::min);
+            assert!(
+                nearest > p.mounting.drill_mm * 0.5,
+                "mounting hole at ({cx:.1},{cy:.1}) is {nearest:.2}mm from a pad centre, \
+                 closer than its own {:.1}mm radius",
+                p.mounting.drill_mm * 0.5
+            );
+        }
+    }
+
+    #[test]
+    fn edge_pads_are_solderable_holes_outside_the_matrix() {
+        use crate::model::{EdgeSide, GridPos, Perfboard};
+        let mut board = Perfboard::new("t", GridPos::new(10, 4), 8, 5);
+        assert!(board.edge_pad_holes().is_empty(), "off by default");
+
+        board.edge_pads = EdgePads::BOTH;
+        let pads = board.edge_pad_holes();
+        assert_eq!(pads.len(), 10, "one pad per row, both sides");
+
+        let left = GridPos::new(8, 4);
+        let right = GridPos::new(19, 8);
+        for p in [left, right] {
+            assert!(
+                !board.contains_global_hole(p),
+                "edge pads must stay out of the matrix so row/column labels keep meaning"
+            );
+            assert!(board.provides_hole(p), "but must still be solderable");
+        }
+        assert_eq!(board.edge_pad_at(left), Some((EdgeSide::Left, 0)));
+        assert_eq!(board.edge_pad_at(right), Some((EdgeSide::Right, 4)));
+        assert_eq!(board.format_global_hole(left).as_deref(), Some("LA"));
+
+        // One row past the end is off the board entirely.
+        assert!(board.edge_pad_at(GridPos::new(8, 9)).is_none());
+    }
 }

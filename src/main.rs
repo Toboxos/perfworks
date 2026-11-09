@@ -1,8 +1,10 @@
+pub mod actions;
 pub mod app;
 pub mod canvas;
 pub mod icons;
 pub mod library;
 pub mod model;
+pub mod netlist;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {

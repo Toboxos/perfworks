@@ -7,6 +7,7 @@ use crate::model::{
     sample_catmull_rom, AxisLabelStyle, BoardKind, BoardTheme, ConnectorKind, GridPos, Perfboard,
     PlacedConnector, Project, RgbColor, SolderLine, Wire, WireMode, WorldPos,
 };
+use crate::netlist::Net;
 
 /// Control scheme selectable in the bottom status bar (inspired by KiCad)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,29 +111,33 @@ impl Viewport {
         self.center.y -= delta_px.y / self.pixels_per_pitch;
     }
 
+    /// Centre and zoom so that the world-space box `min..max` fills the canvas, with a
+    /// little margin. Shared by "fit all boards" and "zoom to selection".
+    pub fn fit_bounds(&mut self, canvas_rect: Rect, min: WorldPos, max: WorldPos) {
+        self.center = WorldPos::new((min.x + max.x) * 0.5, (min.y + max.y) * 0.5);
+        let span_x = (max.x - min.x + 4.0).max(8.0);
+        let span_y = (max.y - min.y + 4.0).max(8.0);
+        let scale_x = canvas_rect.width() / span_x;
+        let scale_y = canvas_rect.height() / span_y;
+        self.pixels_per_pitch = scale_x.min(scale_y).clamp(12.0, 64.0);
+    }
+
     pub fn fit_project(&mut self, canvas_rect: Rect, project: &Project) {
         if project.boards.is_empty() {
             self.center = WorldPos::new(10.0, 8.0);
             self.pixels_per_pitch = 28.0;
             return;
         }
-        let mut min_x = f32::INFINITY;
-        let mut min_y = f32::INFINITY;
-        let mut max_x = f32::NEG_INFINITY;
-        let mut max_y = f32::NEG_INFINITY;
+        let mut min = WorldPos::new(f32::INFINITY, f32::INFINITY);
+        let mut max = WorldPos::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
         for b in &project.boards {
             let (bmin, bmax) = b.world_bounds();
-            min_x = min_x.min(bmin.x);
-            min_y = min_y.min(bmin.y);
-            max_x = max_x.max(bmax.x);
-            max_y = max_y.max(bmax.y);
+            min.x = min.x.min(bmin.x);
+            min.y = min.y.min(bmin.y);
+            max.x = max.x.max(bmax.x);
+            max.y = max.y.max(bmax.y);
         }
-        self.center = WorldPos::new((min_x + max_x) * 0.5, (min_y + max_y) * 0.5);
-        let span_x = (max_x - min_x + 4.0).max(8.0);
-        let span_y = (max_y - min_y + 4.0).max(8.0);
-        let scale_x = canvas_rect.width() / span_x;
-        let scale_y = canvas_rect.height() / span_y;
-        self.pixels_per_pitch = scale_x.min(scale_y).clamp(12.0, 64.0);
+        self.fit_bounds(canvas_rect, min, max);
     }
 }
 
@@ -156,6 +161,53 @@ pub struct CanvasRenderPreview<'a> {
     pub show_x_ray_blocked_holes: bool,
     pub show_pin_labels: bool,
     pub show_net_highlights: bool,
+    /// Net to light up this frame, already resolved from its anchor hole.
+    pub highlighted_net: Option<&'a Net>,
+    /// True when the highlight was pinned by a click rather than merely hovered; hover
+    /// previews draw fainter and never trigger focus dimming.
+    pub highlight_pinned: bool,
+    /// Dim everything that is not on `highlighted_net` (KiCad-style net focus).
+    pub focus_net: bool,
+    /// Nets whose names conflict. Marked permanently, not only when highlighted.
+    pub conflict_nets: &'a [&'a Net],
+}
+
+/// Which entities belong to the focused net, so the draw passes can dim the rest.
+///
+/// Built once per frame rather than asking the netlist per entity: `Net::holes` can hold
+/// thousands of entries for a stripboard rail, and the alternative is a linear scan
+/// inside every draw call.
+#[derive(Default)]
+struct FocusMask {
+    active: bool,
+    holes: std::collections::HashSet<GridPos>,
+    wires: std::collections::HashSet<Uuid>,
+    solder: std::collections::HashSet<Uuid>,
+}
+
+impl FocusMask {
+    fn build(preview: &CanvasRenderPreview<'_>) -> Self {
+        // Focus only engages on a pinned highlight: dimming the whole board as the
+        // pointer sweeps across it would be unusable.
+        let Some(net) = preview
+            .highlighted_net
+            .filter(|_| preview.focus_net && preview.highlight_pinned)
+        else {
+            return Self::default();
+        };
+        Self {
+            active: true,
+            holes: net.holes.iter().copied().collect(),
+            wires: net.wires.iter().copied().collect(),
+            solder: net.solder_lines.iter().copied().collect(),
+        }
+    }
+
+    fn connector_on_net(&self, conn: &PlacedConnector) -> bool {
+        conn.pin_positions()
+            .iter()
+            .any(|(hole, _)| self.holes.contains(hole))
+    }
 }
 
 /// Process KiCad-inspired Touchpad / Mouse camera controls on the canvas response
@@ -262,6 +314,11 @@ pub fn render_workspace(
     {
         draw_blocked_hole_markers(painter, canvas_rect, viewport, project);
     }
+
+    // 3b. Net glow, painted here — after the board and its pads, before every conductor
+    //     and component — so the components occlude the middle of each halo and the glow
+    //     reads as a rim around them instead of a film over them.
+    draw_net_glow_layer(painter, canvas_rect, viewport, project, preview);
 
     let draw_solder_all = |painter: &egui::Painter| {
         for solder in &project.solder_lines {
@@ -409,7 +466,55 @@ pub fn render_workspace(
         }
     }
 
-    // 10. Render Hovered Hole Crosshair Reticle
+    // 10. Net focus. Rather than threading a dim factor through every colour in every
+    //     draw function, wash the finished frame with a scrim and repaint just the
+    //     focused net's conductors on top. Same result, and the ghost/flip alpha rules
+    //     stay untouched.
+    let focus = FocusMask::build(preview);
+    if focus.active {
+        painter.rect_filled(
+            canvas_rect,
+            0.0,
+            Color32::from_rgba_unmultiplied(20, 22, 27, 190),
+        );
+
+        // The glow from the pass below is now under the scrim, so re-lay it here — and
+        // again before the focused conductors, to keep it behind them.
+        draw_net_glow_layer(painter, canvas_rect, viewport, project, preview);
+
+        for solder in project
+            .solder_lines
+            .iter()
+            .filter(|s| focus.solder.contains(&s.id))
+        {
+            let is_selected = selected.contains(&SelectedItem::SolderLine(solder.id));
+            draw_solder_line(painter, canvas_rect, viewport, solder, is_selected, false);
+        }
+        for conn in project
+            .connectors
+            .iter()
+            .filter(|c| focus.connector_on_net(c))
+        {
+            let is_selected = selected.contains(&SelectedItem::Connector(conn.id));
+            draw_connector(
+                painter,
+                canvas_rect,
+                viewport,
+                conn,
+                is_selected,
+                false,
+                preview.ghost_components || viewport.flipped,
+                true,
+                preview.show_pin_labels,
+            );
+        }
+        for wire in project.wires.iter().filter(|w| focus.wires.contains(&w.id)) {
+            let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
+            draw_wire(painter, canvas_rect, viewport, wire, is_selected);
+        }
+    }
+
+    // 11. Render Hovered Hole Crosshair Reticle
     if let Some(hole) = preview.hovered_hole {
         let p = viewport.grid_to_screen(canvas_rect, hole);
         let r = (viewport.pixels_per_pitch * 0.42).max(4.0);
@@ -418,6 +523,185 @@ pub fn render_workspace(
             r,
             Stroke::new(1.4_f32, Color32::from_rgba_unmultiplied(96, 200, 255, 190)),
         );
+    }
+}
+
+/// Additive overlay marking every hole, wire and solder trace belonging to one net.
+///
+/// Additive rather than dimming-everything-else: it composes with the conflict pass and
+/// does not fight the ghost/flip alpha rules that the rest of the renderer depends on.
+/// Falloff of the glow: (extra width in px, alpha) from outermost to innermost. Stacking
+/// translucent passes approximates a Gaussian blur — egui tessellates to vertex-coloured
+/// triangles and offers no per-shape shader, so this is how a halo is built. Blending is
+/// `over` rather than additive, so it saturates toward the colour instead of blowing out
+/// to white, which reads better here than a true bloom would.
+const GLOW_PASSES: [(f32, u8); 3] = [(13.0, 18), (8.0, 30), (4.0, 46)];
+
+/// Halo around a hole where something lands, in pitch-relative radii.
+///
+/// Every radius is **larger than the pad** (`0.34 * ppp`), so the glow bleeds outward
+/// around the copper instead of sitting on top of it as a bright dot — the earlier
+/// version put a near-opaque disc over each pad and washed the board out.
+const CONTACT_PASSES: [(f32, u8); 3] = [(0.68, 18), (0.54, 28), (0.43, 40)];
+
+/// Halo around the body of a component sitting on the net, in px of outward bleed.
+/// Drawn beneath the housing so only the rim shows: a glowing drop shadow.
+const BODY_PASSES: [(f32, u8); 3] = [(11.0, 16), (6.5, 26), (3.0, 36)];
+
+/// Barely-there wash on bare strip copper that happens to be on the net.
+const STRIP_WASH: (f32, u8) = (0.30, 20);
+
+/// Paint the glow for whatever nets want highlighting this frame.
+///
+/// One place decides *which* nets glow and how strongly, so the main pass and the focus
+/// repaint cannot drift apart.
+fn draw_net_glow_layer(
+    painter: &egui::Painter,
+    canvas_rect: Rect,
+    viewport: &Viewport,
+    project: &Project,
+    preview: &CanvasRenderPreview<'_>,
+) {
+    // A name conflict is a warning, so it stays loud even though the ordinary highlight
+    // has been quietened down.
+    for net in preview.conflict_nets {
+        draw_net_overlay(
+            painter,
+            canvas_rect,
+            viewport,
+            project,
+            net,
+            Color32::from_rgb(255, 92, 78),
+            1.3,
+        );
+    }
+    if preview.show_net_highlights {
+        if let Some(net) = preview.highlighted_net {
+            // A hover preview is deliberately faint: it follows the pointer constantly,
+            // so at full strength it would strobe across the board as you move.
+            draw_net_overlay(
+                painter,
+                canvas_rect,
+                viewport,
+                project,
+                net,
+                Color32::from_rgb(96, 226, 255),
+                if preview.highlight_pinned { 1.0 } else { 0.55 },
+            );
+        }
+    }
+}
+
+/// Glow every conductor, contact and component body belonging to one net.
+///
+/// Painted **underneath** the components and conductors, not over them. Drawn on top it
+/// behaved like a coloured film: the bright core of each contact disc covered the pad it
+/// was meant to point at. Underneath, the housing and the wire jacket occlude the middle
+/// of each halo and only the bleed shows — a glowing drop shadow, which is also why the
+/// radii here all exceed the pad radius.
+fn draw_net_overlay(
+    painter: &egui::Painter,
+    canvas_rect: Rect,
+    viewport: &Viewport,
+    project: &Project,
+    net: &Net,
+    color: Color32,
+    strength: f32,
+) {
+    let ppp = viewport.pixels_per_pitch;
+    let tint = |alpha: u8| {
+        Color32::from_rgba_unmultiplied(
+            color.r(),
+            color.g(),
+            color.b(),
+            (alpha as f32 * strength).round().clamp(0.0, 255.0) as u8,
+        )
+    };
+
+    // 1. Conductors: the same path repeatedly, widest and faintest first.
+    for wire in project.wires.iter().filter(|w| net.wires.contains(&w.id)) {
+        let pts: Vec<Pos2> = wire
+            .sampled_points()
+            .iter()
+            .map(|&w| viewport.world_to_screen(canvas_rect, w))
+            .collect();
+        let base = (ppp * 0.24 * wire.thickness).clamp(2.2, 10.0);
+        for (extra, alpha) in GLOW_PASSES {
+            painter.add(egui::Shape::line(
+                pts.clone(),
+                Stroke::new(base + extra, tint(alpha)),
+            ));
+        }
+    }
+    for solder in project
+        .solder_lines
+        .iter()
+        .filter(|s| net.solder_lines.contains(&s.id))
+    {
+        let pts: Vec<Pos2> = solder
+            .nodes
+            .iter()
+            .map(|&g| viewport.grid_to_screen(canvas_rect, g))
+            .collect();
+        let base = (ppp * 0.56 * solder.width_scale).max(4.0);
+        for (extra, alpha) in GLOW_PASSES {
+            painter.add(egui::Shape::line(
+                pts.clone(),
+                Stroke::new(base + extra, tint(alpha)),
+            ));
+        }
+    }
+
+    // 2. Bare strip copper on the net gets only a wash, so a stripboard rail reads as a
+    //    soft trail instead of a row of rings. Skipped entirely for contacts, which get
+    //    the stronger treatment below.
+    let margin = ppp + 4.0;
+    let visible = |p: Pos2| canvas_rect.expand(margin).contains(p);
+    let is_contact = |hole: &GridPos| {
+        net.contacts
+            .binary_search_by_key(&(hole.row, hole.col), |g| (g.row, g.col))
+            .is_ok()
+    };
+
+    let (wash_r, wash_a) = STRIP_WASH;
+    for hole in net.holes.iter().filter(|h| !is_contact(h)) {
+        let p = viewport.grid_to_screen(canvas_rect, *hole);
+        if visible(p) {
+            painter.circle_filled(p, (ppp * wash_r).max(2.0), tint(wash_a));
+        }
+    }
+
+    // 3. Contacts: concentric halos, all wider than the pad so the copper stays visible
+    //    through the middle.
+    for &hole in &net.contacts {
+        let p = viewport.grid_to_screen(canvas_rect, hole);
+        if !visible(p) {
+            continue;
+        }
+        for (radius, alpha) in CONTACT_PASSES {
+            painter.circle_filled(p, (ppp * radius).max(2.0), tint(alpha));
+        }
+    }
+
+    // 4. Component bodies: a halo around any part with a pin on this net, so the whole
+    //    component reads as belonging to it rather than just its pin holes.
+    for conn in project
+        .connectors
+        .iter()
+        .filter(|c| c.pin_positions().iter().any(|(h, _)| is_contact(h)))
+    {
+        let (lo, hi) = conn.world_aabb();
+        let body = viewport.world_rect_to_screen(canvas_rect, lo, hi);
+        if !canvas_rect.intersects(body.expand(BODY_PASSES[0].0)) {
+            continue;
+        }
+        for (bleed, alpha) in BODY_PASSES {
+            painter.rect_filled(
+                body.expand(bleed),
+                (ppp * 0.18).clamp(2.0, 8.0),
+                tint(alpha),
+            );
+        }
     }
 }
 
@@ -559,32 +843,24 @@ fn draw_board(
         );
     }
 
-    // Optional corner mounting holes
-    if board.mounting_holes && board.cols >= 6 && board.rows >= 6 {
-        let mount_offset = 0.68;
-        let corners = [
-            WorldPos::new(
-                board.origin.col as f32 - mount_offset,
-                board.origin.row as f32 - mount_offset,
-            ),
-            WorldPos::new(
-                (board.origin.col + board.cols as i32 - 1) as f32 + mount_offset,
-                board.origin.row as f32 - mount_offset,
-            ),
-            WorldPos::new(
-                board.origin.col as f32 - mount_offset,
-                (board.origin.row + board.rows as i32 - 1) as f32 + mount_offset,
-            ),
-            WorldPos::new(
-                (board.origin.col + board.cols as i32 - 1) as f32 + mount_offset,
-                (board.origin.row + board.rows as i32 - 1) as f32 + mount_offset,
-            ),
-        ];
-        for mc in corners {
-            let sp = viewport.world_to_screen(canvas_rect, mc);
-            painter.circle_filled(sp, ppp * 0.24, Color32::from_rgb(175, 165, 130));
-            painter.circle_filled(sp, ppp * 0.15, Color32::from_rgb(20, 22, 27));
-        }
+    // Corner mounting holes, drawn at their true millimetre diameter so what you see is
+    // what the STEP export drills.
+    let mm_to_px = ppp / crate::model::PITCH_MM;
+    for (mx, my) in board.mounting_centers_mm() {
+        let sp = Pos2::new(
+            board_rect.min.x + mx * mm_to_px,
+            board_rect.min.y + my * mm_to_px,
+        );
+        painter.circle_filled(
+            sp,
+            (board.mounting.pad_mm * 0.5 * mm_to_px).max(1.5),
+            Color32::from_rgb(175, 165, 130),
+        );
+        painter.circle_filled(
+            sp,
+            (board.mounting.drill_mm * 0.5 * mm_to_px).max(1.0),
+            Color32::from_rgb(20, 22, 27),
+        );
     }
 
     // Draw Stripboard / Breadboard underlying conductive strips
@@ -728,6 +1004,18 @@ fn draw_board(
                 );
             }
         }
+    }
+
+    // Oversized elongated edge pads. Drawn as rounded slots rather than round pads so they
+    // read as the chunky wire-landing pads they are on the real board.
+    for g in board.edge_pad_holes() {
+        let center = viewport.grid_to_screen(canvas_rect, g);
+        if !canvas_rect.expand(pad_radius * 3.0).contains(center) {
+            continue;
+        }
+        let slot = Rect::from_center_size(center, Vec2::new(ppp * 1.5, ppp * 0.62));
+        painter.rect_filled(slot, ppp * 0.3, copper_color);
+        painter.circle_filled(center, drill_radius, drill_color);
     }
 
     // Draw row & column coordinate identifiers along board edges
@@ -1531,41 +1819,277 @@ mod viewport_tests {
     fn render_top_bottom_and_ghost_without_native_window() {
         let ctx = egui::Context::default();
         let project = Project::new_starter();
+        let netlist = crate::netlist::Netlist::build(&project, 1);
         for flipped in [false, true] {
             for ghost in [false, true] {
-                let output = ctx.run(egui::RawInput::default(), |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        let rect = ui.max_rect();
-                        let mut viewport = Viewport {
-                            flipped,
-                            ..Default::default()
-                        };
-                        viewport.fit_project(rect, &project);
-                        render_workspace(
-                            ui.painter(),
-                            rect,
-                            &viewport,
-                            &project,
-                            &[],
-                            &CanvasRenderPreview {
-                                ghost_board: None,
-                                ghost_connectors: &[],
-                                active_wire_in_progress: None,
-                                active_solder_in_progress: None,
-                                hovered_hole: None,
-                                ghost_components: ghost,
-                                show_x_ray_blocked_holes: false,
-                                show_pin_labels: true,
-                                show_net_highlights: false,
-                            },
-                        );
+                for highlight in [false, true] {
+                    let net = highlight.then(|| netlist.nets.first()).flatten();
+                    let output = ctx.run(egui::RawInput::default(), |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            let rect = ui.max_rect();
+                            let mut viewport = Viewport {
+                                flipped,
+                                ..Default::default()
+                            };
+                            viewport.fit_project(rect, &project);
+                            render_workspace(
+                                ui.painter(),
+                                rect,
+                                &viewport,
+                                &project,
+                                &[],
+                                &CanvasRenderPreview {
+                                    ghost_board: None,
+                                    ghost_connectors: &[],
+                                    active_wire_in_progress: None,
+                                    active_solder_in_progress: None,
+                                    hovered_hole: None,
+                                    ghost_components: ghost,
+                                    show_x_ray_blocked_holes: false,
+                                    show_pin_labels: true,
+                                    show_net_highlights: highlight,
+                                    highlighted_net: net,
+                                    highlight_pinned: highlight,
+                                    focus_net: highlight,
+                                    conflict_nets: &[],
+                                },
+                            );
+                        });
                     });
-                });
-                assert!(!output.shapes.is_empty());
-                assert!(!ctx
-                    .tessellate(output.shapes, output.pixels_per_point)
-                    .is_empty());
+                    assert!(!output.shapes.is_empty());
+                    assert!(!ctx
+                        .tessellate(output.shapes, output.pixels_per_point)
+                        .is_empty());
+                }
             }
         }
+    }
+
+    /// The overlay must glow, not outline: a stroked ring per hole is what made it read
+    /// as a cage over the board.
+    #[test]
+    fn net_overlay_glows_without_drawing_outlines() {
+        let ctx = egui::Context::default();
+        let project = Project::new_starter();
+        let netlist = crate::netlist::Netlist::build(&project, 1);
+        let net = netlist
+            .nets
+            .iter()
+            .max_by_key(|n| n.holes.len())
+            .expect("starter project has nets");
+        assert!(!net.contacts.is_empty());
+
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(1600.0, 1200.0));
+        let mut viewport = Viewport::default();
+        viewport.fit_project(rect, &project);
+
+        let render = |strength: f32| {
+            ctx.run(egui::RawInput::default(), |ctx| {
+                draw_net_overlay(
+                    &ctx.layer_painter(egui::LayerId::background()),
+                    rect,
+                    &viewport,
+                    &project,
+                    net,
+                    Color32::from_rgb(96, 226, 255),
+                    strength,
+                );
+            })
+        };
+
+        let output = render(1.0);
+        let circles: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Circle(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            circles.iter().all(|c| c.stroke.width == 0.0),
+            "no hard outlines: every hole marker must be a filled disc"
+        );
+        // One disc per pass for each contact, plus a single wash disc for the strip-only
+        // holes on the net.
+        let strip_only = net.holes.len() - net.contacts.len();
+        assert_eq!(
+            circles.len(),
+            net.contacts.len() * CONTACT_PASSES.len() + strip_only
+        );
+        // Conductors are glowed with stacked translucent strokes, never one opaque pass.
+        let paths: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Path(p) => Some(p),
+                _ => None,
+            })
+            .collect();
+        assert!(!paths.is_empty(), "the net has conductors to glow");
+        assert!(
+            paths.iter().all(|p| match p.stroke.color {
+                egui::epaint::ColorMode::Solid(c) => c.a() < 128,
+                _ => false,
+            }),
+            "each glow pass must stay translucent so they can stack"
+        );
+
+        // Hover strength must be uniformly fainter than pinned.
+        let faint = render(0.5);
+        let alpha_sum = |o: &egui::FullOutput| -> u32 {
+            o.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Circle(c) => Some(c.fill.a() as u32),
+                    _ => None,
+                })
+                .sum()
+        };
+        assert!(alpha_sum(&faint) < alpha_sum(&output));
+    }
+
+    /// The glow is a drop shadow, not a film: it must sit behind the components, and no
+    /// halo may be smaller than the pad it surrounds or it covers the copper.
+    #[test]
+    fn glow_sits_behind_components_and_never_covers_a_pad() {
+        // Pad radius used by `draw_board`; every contact halo has to clear it.
+        const PAD_RADIUS_FACTOR: f32 = 0.34;
+        for (radius, _) in CONTACT_PASSES {
+            assert!(
+                radius > PAD_RADIUS_FACTOR,
+                "contact halo {radius} would sit on top of the pad ({PAD_RADIUS_FACTOR})"
+            );
+        }
+        // Softness increases outward: wider passes must be fainter.
+        for window in CONTACT_PASSES.windows(2) {
+            assert!(window[0].0 > window[1].0 && window[0].1 < window[1].1);
+        }
+        for window in GLOW_PASSES.windows(2) {
+            assert!(window[0].0 > window[1].0 && window[0].1 < window[1].1);
+        }
+        for window in BODY_PASSES.windows(2) {
+            assert!(window[0].0 > window[1].0 && window[0].1 < window[1].1);
+        }
+        // Nothing is anywhere near opaque; the old version peaked at 96.
+        let peak = CONTACT_PASSES
+            .iter()
+            .chain(GLOW_PASSES.iter())
+            .chain(BODY_PASSES.iter())
+            .map(|(_, a)| *a)
+            .max()
+            .unwrap();
+        assert!(peak <= 50, "glow pass alpha {peak} is too aggressive");
+
+        // Ordering: the glow must be emitted before any connector housing.
+        let ctx = egui::Context::default();
+        let project = Project::new_starter();
+        let netlist = crate::netlist::Netlist::build(&project, 1);
+        let net = netlist
+            .nets
+            .iter()
+            .find(|n| !n.pins.is_empty() && !n.solder_lines.is_empty())
+            .expect("the demo has a net with both pins and solder");
+
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(1600.0, 1200.0));
+        let mut viewport = Viewport::default();
+        viewport.fit_project(rect, &project);
+        let glow_color = Color32::from_rgb(96, 226, 255);
+
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                render_workspace(
+                    ui.painter(),
+                    rect,
+                    &viewport,
+                    &project,
+                    &[],
+                    &CanvasRenderPreview {
+                        ghost_board: None,
+                        ghost_connectors: &[],
+                        active_wire_in_progress: None,
+                        active_solder_in_progress: None,
+                        hovered_hole: None,
+                        ghost_components: false,
+                        show_x_ray_blocked_holes: false,
+                        show_pin_labels: false,
+                        show_net_highlights: true,
+                        highlighted_net: Some(net),
+                        highlight_pinned: true,
+                        focus_net: false,
+                        conflict_nets: &[],
+                    },
+                );
+            });
+        });
+
+        // Color32 premultiplies, which is lossy at these alphas and so does not round
+        // trip. Build the exact set of colours the glow can emit and match on those.
+        let expected: Vec<Color32> = CONTACT_PASSES
+            .iter()
+            .map(|(_, a)| *a)
+            .chain(BODY_PASSES.iter().map(|(_, a)| *a))
+            .chain(GLOW_PASSES.iter().map(|(_, a)| *a))
+            .chain(std::iter::once(STRIP_WASH.1))
+            .map(|a| {
+                Color32::from_rgba_unmultiplied(glow_color.r(), glow_color.g(), glow_color.b(), a)
+            })
+            .collect();
+        let is_glow = |c: &Color32| expected.contains(c);
+        let last_glow = output.shapes.iter().rposition(|s| match &s.shape {
+            egui::Shape::Circle(c) => is_glow(&c.fill),
+            egui::Shape::Rect(r) => is_glow(&r.fill),
+            _ => false,
+        });
+        // The gold pin post is the innermost thing a connector draws.
+        let first_pin = output.shapes.iter().position(|s| match &s.shape {
+            egui::Shape::Rect(r) => r.fill == Color32::from_rgb(255, 228, 132),
+            _ => false,
+        });
+
+        let (glow, pin) = (
+            last_glow.expect("the highlighted net should glow"),
+            first_pin.expect("the demo draws pin posts"),
+        );
+        assert!(
+            glow < pin,
+            "glow at {glow} must be painted before component pins at {pin}, \
+             otherwise it washes them out"
+        );
+    }
+
+    #[test]
+    fn contacts_are_the_holes_that_carry_something() {
+        let project = Project::new_starter();
+        let netlist = crate::netlist::Netlist::build(&project, 1);
+        for net in &netlist.nets {
+            for contact in &net.contacts {
+                assert!(
+                    net.holes.contains(contact),
+                    "a contact must be a member hole"
+                );
+            }
+            // Every pin hole is a contact.
+            for pin in &net.pins {
+                assert!(net.contacts.contains(&pin.hole));
+            }
+            // `contacts` is searched with binary_search_by_key in the renderer, so the
+            // sort order it relies on has to hold.
+            let mut sorted = net.contacts.clone();
+            sorted.sort_by_key(|g| (g.row, g.col));
+            assert_eq!(sorted, net.contacts);
+        }
+
+        // On an isolated-pad perfboard every net hole carries something, so there is no
+        // wash; on a stripboard the rail contributes holes that do not.
+        let strip = netlist
+            .nets
+            .iter()
+            .find(|n| n.holes.len() > n.contacts.len());
+        assert!(
+            strip.is_some(),
+            "the demo's stripboard should produce strip-only holes"
+        );
     }
 }
