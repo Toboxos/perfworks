@@ -658,9 +658,14 @@ mod tests {
         assert!((p.size.z - 1.6).abs() < 1e-5, "thickness {}", p.size.z);
         // Top face at z=0 is the contract components are stacked against.
         assert!((p.max().z - 0.0).abs() < 1e-5, "top face at {}", p.max().z);
-        assert_eq!(p.bores.len(), 4, "M3 corner holes");
+        assert_eq!(p.bores.len(), 4, "corner mounting holes");
         for b in &p.bores {
-            assert!((b.diameter - 3.2).abs() < 1e-5);
+            assert!(
+                (b.diameter - preset.mounting.drill_mm).abs() < 1e-5,
+                "bore {} should match the preset drill {}",
+                b.diameter,
+                preset.mounting.drill_mm
+            );
         }
     }
 

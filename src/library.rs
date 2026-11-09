@@ -20,11 +20,12 @@ const PROTOBOARD_OUTLINE: BoardOutline = BoardOutline {
     corner_radius_mm: 1.0,
 };
 
-/// M3 clearance holes, 3.5mm in from each corner.
+/// Corner tooling holes, measured off the 5×7 board. See [`MountingSpec::default`] for why
+/// the drill diameter in particular is worth confirming with calipers.
 const PROTOBOARD_MOUNTING: MountingSpec = MountingSpec {
-    inset_mm: 3.5,
-    drill_mm: 3.2,
-    pad_mm: 6.0,
+    inset_mm: 2.2,
+    drill_mm: 1.5,
+    pad_mm: 2.8,
 };
 
 /// Standard board template in the library (Perfboard, Stripboard, Breadboard)
@@ -103,7 +104,7 @@ fn build_board_presets() -> Vec<BoardPreset> {
             "board_perf_24x18",
             "Protoboard 5×7cm",
             "Protoboard 5×7cm (70×50mm, 24×18)",
-            "Double-sided FR4 protoboard, 1.6mm, M3 corner holes, edge solder pads",
+            "Double-sided FR4 protoboard, 1.6mm, corner holes, edge solder pads",
             24,
             18,
         ),
@@ -111,7 +112,7 @@ fn build_board_presets() -> Vec<BoardPreset> {
             "board_perf_20x14",
             "Protoboard 4×6cm",
             "Protoboard 4×6cm (60×40mm, 20×14)",
-            "Double-sided FR4 protoboard, 1.6mm, M3 corner holes, edge solder pads",
+            "Double-sided FR4 protoboard, 1.6mm, corner holes, edge solder pads",
             20,
             14,
         ),
@@ -119,7 +120,7 @@ fn build_board_presets() -> Vec<BoardPreset> {
             "board_perf_24x10",
             "Protoboard 3×7cm",
             "Protoboard 3×7cm (70×30mm, 24×10)",
-            "Double-sided FR4 protoboard, 1.6mm, M3 corner holes, edge solder pads",
+            "Double-sided FR4 protoboard, 1.6mm, corner holes, edge solder pads",
             24,
             10,
         ),
@@ -127,7 +128,7 @@ fn build_board_presets() -> Vec<BoardPreset> {
             "board_perf_28x6",
             "Protoboard 2×8cm",
             "Protoboard 2×8cm (80×20mm, 28×6)",
-            "Double-sided FR4 protoboard, 1.6mm, M3 corner holes, edge solder pads",
+            "Double-sided FR4 protoboard, 1.6mm, corner holes, edge solder pads",
             28,
             6,
         ),
@@ -755,7 +756,92 @@ mod tests {
         }
     }
 
+    /// Copper radius of an ordinary pad, matching what the renderer draws (0.34 pitch).
+    const PAD_RADIUS_MM: f32 = 0.34 * crate::model::PITCH_MM;
+    /// Half-extents of an edge pad slot, matching the renderer (1.02 × 0.52 pitch).
+    const EDGE_PAD_HALF_MM: (f32, f32) =
+        (0.51 * crate::model::PITCH_MM, 0.26 * crate::model::PITCH_MM);
+
     /// Mounting holes have to clear the outermost holes, or a standoff fouls the copper.
+    ///
+    /// This originally compared against the *drill* radius only, and passed while the 6mm
+    /// annular pad was visibly swallowing the corner holes. Copper is what collides, so
+    /// copper is what gets measured.
+    #[test]
+    fn protoboard_mounting_pads_do_not_touch_any_other_copper() {
+        let p = get_board_preset_by_id("board_perf_24x18").unwrap();
+        let mut board =
+            crate::model::Perfboard::new("t", crate::model::GridPos::new(0, 0), p.cols, p.rows);
+        board.outline = p.outline;
+        board.mounting = p.mounting;
+        board.edge_pads = p.edge_pads;
+        board.mounting_holes = p.mounting_holes;
+
+        let mount_r = p.mounting.pad_mm * 0.5;
+        for (cx, cy) in board.mounting_centers_mm() {
+            for r in 0..board.rows as i32 {
+                for c in 0..board.cols as i32 {
+                    let (hx, hy) = board
+                        .hole_to_local_mm(board.local_to_global(crate::model::GridPos::new(c, r)));
+                    let d = (cx - hx).hypot(cy - hy);
+                    assert!(
+                        d > mount_r + PAD_RADIUS_MM,
+                        "mounting pad at ({cx:.2},{cy:.2}) overlaps the pad at \
+                         ({hx:.2},{hy:.2}): {d:.2}mm apart, needs {:.2}mm",
+                        mount_r + PAD_RADIUS_MM
+                    );
+                }
+            }
+            for g in board.edge_pad_holes() {
+                let (hx, hy) = board.hole_to_local_mm(g);
+                // Slot, not a disc: compare against the nearest point on its rectangle.
+                let dx = ((cx - hx).abs() - EDGE_PAD_HALF_MM.0).max(0.0);
+                let dy = ((cy - hy).abs() - EDGE_PAD_HALF_MM.1).max(0.0);
+                let d = dx.hypot(dy);
+                assert!(
+                    d > mount_r,
+                    "mounting pad at ({cx:.2},{cy:.2}) overlaps the edge pad at \
+                     ({hx:.2},{hy:.2}): {d:.2}mm clear, needs {mount_r:.2}mm"
+                );
+            }
+        }
+    }
+
+    /// An edge pad that hangs off the substrate is not a pad, it is a drawing error.
+    #[test]
+    fn edge_pads_lie_entirely_within_the_substrate() {
+        for preset in standard_board_library()
+            .iter()
+            .filter(|p| p.edge_pads.any())
+        {
+            let mut board = crate::model::Perfboard::new(
+                "t",
+                crate::model::GridPos::new(0, 0),
+                preset.cols,
+                preset.rows,
+            );
+            board.outline = preset.outline;
+            board.mounting = preset.mounting;
+            board.mounting_holes = preset.mounting_holes;
+            board.edge_pads = preset.edge_pads;
+
+            let (w, h) = board.size_mm();
+            for g in board.edge_pad_holes() {
+                let (x, y) = board.hole_to_local_mm(g);
+                assert!(
+                    x - EDGE_PAD_HALF_MM.0 > 0.0 && x + EDGE_PAD_HALF_MM.0 < w,
+                    "{}: edge pad at x={x:.2} runs off a {w:.1}mm board",
+                    preset.id
+                );
+                assert!(
+                    y - EDGE_PAD_HALF_MM.1 > 0.0 && y + EDGE_PAD_HALF_MM.1 < h,
+                    "{}: edge pad at y={y:.2} runs off a {h:.1}mm board",
+                    preset.id
+                );
+            }
+        }
+    }
+
     #[test]
     fn protoboard_mounting_holes_sit_clear_of_the_hole_field() {
         let p = get_board_preset_by_id("board_perf_24x18").unwrap();
@@ -802,11 +888,25 @@ mod tests {
         assert!(board.edge_pad_holes().is_empty(), "off by default");
 
         board.edge_pads = EdgePads::BOTH;
-        let pads = board.edge_pad_holes();
-        assert_eq!(pads.len(), 10, "one pad per row, both sides");
+        board.mounting_holes = false;
+        assert_eq!(
+            board.edge_pad_holes().len(),
+            10,
+            "one pad per row on each side when nothing occupies the corners"
+        );
 
-        let left = GridPos::new(8, 4);
-        let right = GridPos::new(19, 8);
+        // With corner mounting holes the first and last rows give way to them, as on the
+        // real board.
+        board.mounting_holes = true;
+        assert_eq!(board.edge_pad_holes().len(), 6, "3 rows per side");
+        assert!(
+            board.edge_pad_at(GridPos::new(9, 4)).is_none(),
+            "row 0 belongs to the corner mounting hole"
+        );
+
+        board.mounting_holes = false;
+        let left = GridPos::new(9, 4);
+        let right = GridPos::new(18, 8);
         for p in [left, right] {
             assert!(
                 !board.contains_global_hole(p),
@@ -819,6 +919,6 @@ mod tests {
         assert_eq!(board.format_global_hole(left).as_deref(), Some("LA"));
 
         // One row past the end is off the board entirely.
-        assert!(board.edge_pad_at(GridPos::new(8, 9)).is_none());
+        assert!(board.edge_pad_at(GridPos::new(9, 9)).is_none());
     }
 }

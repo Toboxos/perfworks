@@ -1013,7 +1013,7 @@ fn draw_board(
         if !canvas_rect.expand(pad_radius * 3.0).contains(center) {
             continue;
         }
-        let slot = Rect::from_center_size(center, Vec2::new(ppp * 1.5, ppp * 0.62));
+        let slot = Rect::from_center_size(center, Vec2::new(ppp * 1.02, ppp * 0.52));
         painter.rect_filled(slot, ppp * 0.3, copper_color);
         painter.circle_filled(center, drill_radius, drill_color);
     }

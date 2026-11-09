@@ -279,12 +279,19 @@ pub struct MountingSpec {
 }
 
 impl Default for MountingSpec {
-    /// M3 clearance, the standard for this board family.
+    /// Measured off the 5×7 board: a small ~1.5mm tooling hole about 2.2mm in from each
+    /// corner, not the M3 clearance hole these boards are often assumed to have.
+    ///
+    /// The photograph this came from resolves roughly 5 pixels per millimetre, which is
+    /// enough to place the hole but not enough to call 1.5mm against 2.0mm with
+    /// confidence. **Check this one with calipers before trusting it for a fastener** --
+    /// it is the single number an enclosure standoff has to match, and it is editable per
+    /// board in the inspector as well as here.
     fn default() -> Self {
         Self {
-            inset_mm: 3.5,
-            drill_mm: 3.2,
-            pad_mm: 6.0,
+            inset_mm: 2.2,
+            drill_mm: 1.5,
+            pad_mm: 2.8,
         }
     }
 }
@@ -309,11 +316,14 @@ impl EdgeSide {
 
 /// Oversized elongated solder pads running down the left and right board edges.
 ///
-/// Real protoboards space these at roughly 1.5 row pitches, which would put them off the
-/// integer lattice the whole model is built on. We instead place exactly one per row, two
-/// pitches outboard of the hole field, so they behave as ordinary solderable holes
-/// everywhere — netlist, hit-testing, DRC — at the cost of a cosmetic difference in pad
-/// count. Nothing mounts to them, so the deviation is harmless.
+/// On the real board these sit about 1.5 pitches outboard of the hole field, which is off
+/// the integer lattice the whole model is built on. They are instead placed exactly one
+/// pitch out and one per row, so they behave as ordinary solderable holes everywhere —
+/// netlist, hit-testing, DRC — at the cost of sitting ~0.7mm further inboard than the
+/// physical pads. Nothing mounts to them, so the deviation is harmless.
+///
+/// Two pitches would be truer to the spacing but puts the pad centre 0.72mm from the board
+/// edge, which hangs half the pad off the substrate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct EdgePads {
     pub left: bool,
@@ -343,7 +353,7 @@ impl EdgePads {
 }
 
 /// How far outboard of the hole field the edge pad strips sit, in pitch units.
-pub const EDGE_PAD_OFFSET: i32 = 2;
+pub const EDGE_PAD_OFFSET: i32 = 1;
 
 /// A perfboard, stripboard, or breadboard placed on the workspace plane
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -438,7 +448,20 @@ impl Perfboard {
         }
     }
 
-    /// Global positions of every enabled edge pad, one per row.
+    /// Rows that carry an edge pad.
+    ///
+    /// The first and last rows are skipped when the board has corner mounting holes,
+    /// because that is where those holes are — and it is what the real board does: its
+    /// edge pad strip starts one row down from the corner.
+    fn edge_pad_rows(&self) -> std::ops::Range<i32> {
+        if self.mounting_holes && self.rows >= 3 {
+            1..self.rows as i32 - 1
+        } else {
+            0..self.rows as i32
+        }
+    }
+
+    /// Global positions of every enabled edge pad.
     pub fn edge_pad_holes(&self) -> Vec<GridPos> {
         let mut out = Vec::new();
         for side in EdgeSide::ALL {
@@ -446,7 +469,7 @@ impl Perfboard {
                 continue;
             }
             let c = self.edge_pad_col(side);
-            for r in 0..self.rows as i32 {
+            for r in self.edge_pad_rows() {
                 out.push(self.local_to_global(GridPos::new(c, r)));
             }
         }
@@ -456,7 +479,7 @@ impl Perfboard {
     /// Which edge pad, if any, a global position refers to.
     pub fn edge_pad_at(&self, global: GridPos) -> Option<(EdgeSide, i32)> {
         let row = global.row - self.origin.row;
-        if row < 0 || row >= self.rows as i32 {
+        if !self.edge_pad_rows().contains(&row) {
             return None;
         }
         EdgeSide::ALL.into_iter().find_map(|side| {

@@ -1363,6 +1363,17 @@ impl eframe::App for PerfworkApp {
         // every board and quits, so the feature can still be exercised end to end.
         // See tools/validate_png.sh.
         #[cfg(not(target_arch = "wasm32"))]
+        if let Ok(path) = std::env::var("PERFWORK_LOAD") {
+            if let Ok(data) = std::fs::read_to_string(&path) {
+                if let Ok(p) = serde_json::from_str::<Project>(&data) {
+                    self.project = p;
+                    self.selected.clear();
+                }
+            }
+            std::env::remove_var("PERFWORK_LOAD");
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         if let Ok(dir) = std::env::var("PERFWORK_DUMP_PNG") {
             self.export_board_images(
                 std::path::Path::new(&dir),
