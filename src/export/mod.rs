@@ -5,4 +5,5 @@
 //! them testable without a window, which matters because neither format can be eyeballed
 //! from inside the test suite.
 
+pub mod image;
 pub mod step;

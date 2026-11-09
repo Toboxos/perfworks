@@ -288,6 +288,9 @@ pub struct PerfworkApp {
     pub new_board_mounting: MountingSpec,
     pub new_board_edge_pads: EdgePads,
     pub new_board_mounting_holes: bool,
+    /// GL context for offscreen PNG rendering; `None` in headless tests.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub gl: Option<std::sync::Arc<glow::Context>>,
 
     // Wire tool configuration & active drawing state
     pub wire_mode: WireMode,
@@ -370,6 +373,8 @@ impl Default for PerfworkApp {
             new_board_mounting: MountingSpec::default(),
             new_board_edge_pads: EdgePads::default(),
             new_board_mounting_holes: true,
+            #[cfg(not(target_arch = "wasm32"))]
+            gl: None,
 
             wire_mode: WireMode::Straight,
             wire_color: WIRE_PALETTE[2].1,
@@ -407,7 +412,68 @@ impl Default for PerfworkApp {
 impl PerfworkApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         configure_modern_cad_theme(&cc.egui_ctx);
-        Self::default()
+        let mut app = Self::default();
+        // Kept so the PNG export can render into its own framebuffer. `Default` leaves it
+        // `None`, which is what every headless test constructs — image export is the one
+        // feature that genuinely needs a GPU, and it reports that rather than panicking.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            app.gl = cc.gl.clone();
+        }
+        app
+    }
+
+    /// Render both sides of every board to PNG, writing `<stem>-<board>-front.png` and
+    /// `-back.png` next to the chosen path.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn export_board_images(&mut self, dir: &std::path::Path, stem: &str, px_per_mm: f32) {
+        use crate::export::image::{BoardSide, ImagePlan};
+
+        let Some(gl) = self.gl.clone() else {
+            self.status_toast = Some((
+                "Image export needs a GPU context; none is available".to_string(),
+                true,
+            ));
+            return;
+        };
+
+        let mut written = 0usize;
+        for (i, board) in self.project.boards.iter().enumerate() {
+            for side in BoardSide::ALL {
+                let plan = ImagePlan::new(board, side, px_per_mm);
+                let bytes = match crate::export::image::render_png(&gl, &plan, &self.project) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        self.status_toast = Some((format!("Image export failed: {e}"), true));
+                        return;
+                    }
+                };
+                let slug: String = board
+                    .name
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                    .collect();
+                let path = dir.join(format!("{stem}-{i}-{slug}-{}.png", side.suffix()));
+                if let Err(e) = std::fs::write(&path, bytes) {
+                    self.status_toast =
+                        Some((format!("Could not write {}: {e}", path.display()), true));
+                    return;
+                }
+                written += 1;
+            }
+        }
+
+        self.status_toast = Some(if written == 0 {
+            ("No boards to export".to_string(), true)
+        } else {
+            (
+                format!(
+                    "Exported {written} image(s) at {px_per_mm:.0} px/mm to {}",
+                    dir.display()
+                ),
+                false,
+            )
+        });
     }
 
     fn record_undo(&mut self) {
@@ -1292,6 +1358,28 @@ impl eframe::App for PerfworkApp {
         self.handle_keyboard_shortcuts(ctx);
         self.rebuild_netlist();
 
+        // Offscreen PNG rendering is the one path the test suite cannot reach: it needs a
+        // real GL context, which only exists inside a running window. This hook exports
+        // every board and quits, so the feature can still be exercised end to end.
+        // See tools/validate_png.sh.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Ok(dir) = std::env::var("PERFWORK_DUMP_PNG") {
+            self.export_board_images(
+                std::path::Path::new(&dir),
+                "dump",
+                crate::export::image::DEFAULT_PX_PER_MM,
+            );
+            if let Some((msg, err)) = &self.status_toast {
+                println!(
+                    "PERFWORK_DUMP_PNG: {}{}",
+                    if *err { "ERROR: " } else { "" },
+                    msg
+                );
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
         // 1. Minimal Standard Window Menu Bar (File, Edit, View)
         egui::TopBottomPanel::top("window_menu_bar")
             .frame(
@@ -1440,6 +1528,24 @@ impl PerfworkApp {
                                 ),
                                 Err(e) => (format!("STEP export failed: {e}"), true),
                             });
+                        }
+                    }
+                    if ui.button("Export Board Images (PNG)...").clicked() {
+                        ui.close_menu();
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_file_name("board.png")
+                            .save_file()
+                        {
+                            let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                            let stem = path
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "board".to_string());
+                            self.export_board_images(
+                                &dir,
+                                &stem,
+                                crate::export::image::DEFAULT_PX_PER_MM,
+                            );
                         }
                     }
                     ui.separator();

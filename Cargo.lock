@@ -2120,6 +2120,9 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
+ "egui_glow",
+ "glow",
+ "image",
  "rfd",
  "serde",
  "serde_json",
