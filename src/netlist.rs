@@ -533,6 +533,7 @@ mod tests {
             kind: ConnectorKind::SinglePin { square_pad: false },
             body_color: RgbColor::new(200, 180, 60),
             pin_labels: Vec::new(),
+            body_height_mm: None,
         }
     }
 
@@ -668,6 +669,7 @@ mod tests {
             },
             body_color: RgbColor::new(52, 56, 64),
             pin_labels: Vec::new(),
+            body_height_mm: None,
         };
         let id = sw.id;
         p.connectors = vec![sw];
@@ -694,6 +696,7 @@ mod tests {
             },
             body_color: RgbColor::new(238, 236, 224),
             pin_labels: Vec::new(),
+            body_height_mm: None,
         };
         let id = j.id;
         p.connectors = vec![j];

@@ -316,6 +316,16 @@ pub struct FootprintDef {
     /// Local 2D bounding box `(min_x, min_y)` to `(max_x, max_y)` in grid pitch units
     pub body_min: (f32, f32),
     pub body_max: (f32, f32),
+    /// Height of the body above the top of the board, in mm. Together with `standoff_mm`
+    /// this is what the 3D export extrudes, so it is the number an enclosure clearance
+    /// check depends on.
+    ///
+    /// These are nominal values for the common variant of each part. Where a part is sold
+    /// in several heights (tactile switches especially) the comment on the entry says which
+    /// one was assumed — and any individual placement can override it from the inspector.
+    pub body_height_mm: f32,
+    /// Gap between the board surface and the underside of the body, in mm.
+    pub standoff_mm: f32,
 }
 
 static FOOTPRINTS: LazyLock<Vec<FootprintDef>> = LazyLock::new(build_footprints);
@@ -415,6 +425,9 @@ fn build_footprints() -> Vec<FootprintDef> {
             internal_nets: Vec::new(),
             body_min: (-1.15, -1.10),
             body_max: ((pin_count - 1) as f32 + 1.15, 1.15),
+            // B*B-XH-A housing stands 5.75mm off the board.
+            body_height_mm: 5.75,
+            standoff_mm: 0.0,
         });
     }
 
@@ -457,6 +470,9 @@ fn build_footprints() -> Vec<FootprintDef> {
         internal_nets: Vec::new(),
         body_min: (-1.05, -1.25),
         body_max: (3.05, 1.25),
+        // KF128-style 5.08mm block; the screw head is the tallest point.
+        body_height_mm: 10.0,
+        standoff_mm: 0.0,
     });
 
     list.push(FootprintDef {
@@ -507,6 +523,8 @@ fn build_footprints() -> Vec<FootprintDef> {
         internal_nets: Vec::new(),
         body_min: (-1.05, -1.25),
         body_max: (5.05, 1.25),
+        body_height_mm: 10.0,
+        standoff_mm: 0.0,
     });
 
     // 3. DIP IC Sockets (300mil / 3-hole row spacing)
@@ -551,6 +569,9 @@ fn build_footprints() -> Vec<FootprintDef> {
             internal_nets: Vec::new(),
             body_min: (-0.45, -0.55),
             body_max: (3.45, (half_pins - 1) as f32 + 0.55),
+            // Socket body ~3.3mm with an IC seated in it; the IC is the top surface.
+            body_height_mm: 5.0,
+            standoff_mm: 0.0,
         });
     }
 
@@ -582,6 +603,9 @@ fn build_footprints() -> Vec<FootprintDef> {
         internal_nets: Vec::new(),
         body_min: (-0.4, -0.52),
         body_max: (4.4, 0.52),
+        // 1/4W axial body lying flat: ~2.3mm diameter, lifted slightly off the board.
+        body_height_mm: 2.3,
+        standoff_mm: 0.5,
     });
 
     list.push(FootprintDef {
@@ -617,6 +641,9 @@ fn build_footprints() -> Vec<FootprintDef> {
         internal_nets: Vec::new(),
         body_min: (-0.95, -0.85),
         body_max: (2.95, 0.65),
+        // Standing upright: 15.6mm package including the heatsink tab and its M3 hole.
+        body_height_mm: 15.6,
+        standoff_mm: 0.0,
     });
 
     list.push(FootprintDef {
@@ -663,6 +690,10 @@ fn build_footprints() -> Vec<FootprintDef> {
         internal_nets: vec![vec![0, 2], vec![1, 3]],
         body_min: (-0.45, -0.45),
         body_max: (2.45, 2.45),
+        // The 6x6x5mm variant, measured to the top of the plunger. These are sold from
+        // 4.3mm to 13mm tall, so this is the one most worth overriding per placement.
+        body_height_mm: 5.0,
+        standoff_mm: 0.0,
     });
 
     list

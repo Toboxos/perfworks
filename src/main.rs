@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod app;
 pub mod canvas;
+pub mod export;
 pub mod icons;
 pub mod library;
 pub mod model;
@@ -91,6 +92,7 @@ mod tests {
             },
             body_color: RgbColor::new(240, 240, 230),
             pin_labels: Vec::new(),
+            body_height_mm: None,
         };
         assert!(proj.validate_connector_placement(&jst, None).is_ok());
         proj.connectors.push(jst);
@@ -106,6 +108,7 @@ mod tests {
                 kind: ConnectorKind::SinglePin { square_pad: false },
                 body_color: RgbColor::new(200, 180, 60),
                 pin_labels: Vec::new(),
+                body_height_mm: None,
             };
             assert!(
                 proj.validate_connector_placement(&pin, None).is_err(),
@@ -125,6 +128,7 @@ mod tests {
                 kind: ConnectorKind::SinglePin { square_pad: false },
                 body_color: RgbColor::new(200, 180, 60),
                 pin_labels: Vec::new(),
+                body_height_mm: None,
             };
             assert!(proj.validate_connector_placement(&pin, None).is_ok());
         }
@@ -153,6 +157,7 @@ mod tests {
             kind: ConnectorKind::SinglePin { square_pad: false },
             body_color: RgbColor::new(200, 180, 60),
             pin_labels: Vec::new(),
+            body_height_mm: None,
         };
         assert!(proj.validate_connector_placement(&pin, None).is_err());
 

@@ -649,9 +649,28 @@ pub struct PlacedConnector {
     pub body_color: RgbColor,
     /// Optional custom pin names (indexed by pin 0..N)
     pub pin_labels: Vec<String>,
+    /// Per-placement override for the body height in mm, for parts sold in several heights.
+    /// `None` uses the library value.
+    #[serde(default)]
+    pub body_height_mm: Option<f32>,
 }
 
 impl PlacedConnector {
+    /// Vertical extent of the body above the board surface, in mm, as
+    /// `(standoff, height)`. This is what the 3D export extrudes.
+    pub fn body_profile_mm(&self) -> (f32, f32) {
+        let (standoff, height) = match &self.kind {
+            // A 2.54mm header post stands ~11.5mm proud of the board; the plastic spacer
+            // is part of that, so there is no standoff below it.
+            ConnectorKind::SinglePin { .. } | ConnectorKind::HeaderLine { .. } => (0.0, 11.5),
+            ConnectorKind::LibraryFootprint { footprint_id } => get_footprint_by_id(footprint_id)
+                .map(|fp| (fp.standoff_mm, fp.body_height_mm))
+                // An unknown footprint id already renders as a 1x1 placeholder; give it a
+                // low placeholder body rather than nothing, so it is visible in CAD.
+                .unwrap_or((0.0, 3.0)),
+        };
+        (standoff, self.body_height_mm.unwrap_or(height))
+    }
     /// Returns the global grid positions of all electrical pins of this connector
     pub fn pin_positions(&self) -> Vec<(GridPos, String)> {
         match &self.kind {
@@ -1093,6 +1112,7 @@ impl Project {
             },
             body_color: RgbColor::new(238, 236, 224),
             pin_labels: vec!["VCC".to_string(), "GND".to_string()],
+            body_height_mm: None,
         };
 
         let jst_sensor = PlacedConnector {
@@ -1111,6 +1131,7 @@ impl Project {
                 "SDA".to_string(),
                 "SCL".to_string(),
             ],
+            body_height_mm: None,
         };
 
         let mcu_header_left = PlacedConnector {
@@ -1135,6 +1156,7 @@ impl Project {
                 "A0".into(),
                 "5V".into(),
             ],
+            body_height_mm: None,
         };
 
         let mcu_header_right = PlacedConnector {
@@ -1150,6 +1172,7 @@ impl Project {
             },
             body_color: RgbColor::new(42, 46, 54),
             pin_labels: (9..=16).map(|i| format!("P{}", i)).collect(),
+            body_height_mm: None,
         };
 
         let dip_ic = PlacedConnector {
@@ -1172,6 +1195,7 @@ impl Project {
                 "DIS".into(),
                 "VCC".into(),
             ],
+            body_height_mm: None,
         };
 
         let test_pin_1 = PlacedConnector {
@@ -1183,6 +1207,7 @@ impl Project {
             kind: ConnectorKind::SinglePin { square_pad: true },
             body_color: RgbColor::new(225, 185, 65),
             pin_labels: vec!["SDA".into()],
+            body_height_mm: None,
         };
 
         let test_pin_2 = PlacedConnector {
@@ -1194,6 +1219,7 @@ impl Project {
             kind: ConnectorKind::SinglePin { square_pad: false },
             body_color: RgbColor::new(225, 185, 65),
             pin_labels: vec!["SCL".into()],
+            body_height_mm: None,
         };
 
         let aux_terminal = PlacedConnector {
@@ -1207,6 +1233,7 @@ impl Project {
             },
             body_color: RgbColor::new(38, 148, 92),
             pin_labels: vec!["OUT+".into(), "OUT-".into()],
+            body_height_mm: None,
         };
 
         // Solder lines demonstrating multi-hole traces and T-junctions

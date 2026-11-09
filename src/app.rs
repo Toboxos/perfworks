@@ -1050,6 +1050,7 @@ impl PerfworkApp {
             kind,
             body_color,
             pin_labels: Vec::new(),
+            body_height_mm: None,
         })
     }
 
@@ -1417,6 +1418,28 @@ impl PerfworkApp {
                                     ));
                                 }
                             }
+                        }
+                    }
+                    if ui.button("Export STEP (3D)...").clicked() {
+                        ui.close_menu();
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("STEP AP214", &["step", "stp"])
+                            .set_file_name("circuit.step")
+                            .save_file()
+                        {
+                            let name = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "circuit.step".to_string());
+                            let text = crate::export::step::export_step(&self.project, &name);
+                            let solids = crate::export::step::collect_prisms(&self.project).len();
+                            self.status_toast = Some(match std::fs::write(&path, text) {
+                                Ok(()) => (
+                                    format!("Exported {} solid(s) to {}", solids, path.display()),
+                                    false,
+                                ),
+                                Err(e) => (format!("STEP export failed: {e}"), true),
+                            });
                         }
                     }
                     ui.separator();
@@ -2063,6 +2086,40 @@ impl PerfworkApp {
                 ))
                 .size(11.0)
                 .color(Color32::from_rgb(255, 168, 92)),
+            );
+        }
+
+        // Body height drives the 3D export only, so it lives next to the physical facts
+        // rather than the electrical ones. Parts sold in several heights (tactile switches
+        // especially) are why this is overridable per placement at all.
+        ui.add_space(4.0);
+        let (standoff, height) = conn.body_profile_mm();
+        let mut overridden = conn.body_height_mm.is_some();
+        if ui
+            .checkbox(&mut overridden, "Custom body height (3D)")
+            .changed()
+        {
+            conn.body_height_mm = overridden.then_some(height);
+        }
+        if let Some(h) = conn.body_height_mm.as_mut() {
+            ui.add(
+                egui::DragValue::new(h)
+                    .speed(0.1)
+                    .range(0.1..=120.0)
+                    .suffix(" mm tall"),
+            );
+        } else {
+            ui.label(
+                RichText::new(format!("{:.1} mm tall (library)", height))
+                    .size(11.0)
+                    .color(Color32::GRAY),
+            );
+        }
+        if standoff > 0.0 {
+            ui.label(
+                RichText::new(format!("{:.1} mm standoff", standoff))
+                    .size(11.0)
+                    .color(Color32::GRAY),
             );
         }
 
@@ -3770,6 +3827,7 @@ mod interaction_tests {
             kind: ConnectorKind::SinglePin { square_pad: false },
             body_color: RgbColor::new(225, 185, 65),
             pin_labels: Vec::new(),
+            body_height_mm: None,
         }
     }
 
@@ -4809,6 +4867,7 @@ mod interaction_tests {
             },
             body_color: RgbColor::new(36, 38, 44),
             pin_labels: Vec::new(),
+            body_height_mm: None,
         };
         let id = dip.id;
         app.project.connectors.push(dip);
