@@ -39,6 +39,17 @@
    - **Flip (`F`)** turns the workspace over into a horizontally mirrored solder-side view, keeping identifiers readable and hole coordinates unchanged. Components appear transparent and solder-side wires/traces are drawn in front. Pan, zoom, picking, and placement use the mirrored coordinates. This is a view change, not a destructive edit or a physical component flip.
    - In the flipped view, component-side wires are ghosted too (including their outlines and selection handles), while solder-side wires and through-hole pins/leads remain solid. Housing-overhang markers are hidden on the solder side; ghost wire paths do not visually block the holes they cross.
 
+7. **Real Physical Dimensions**
+   - Boards carry a millimetre outline (border, thickness, corner radius) and corner hole geometry (inset, drill, pad) alongside their hole lattice, so a board is the size it claims to be rather than a hole count with an arbitrary margin.
+   - The four boards of the standard double-sided FR4 kit ship as presets: **5×7cm (24×18)**, **4×6cm (20×14)**, **3×7cm (24×10)** and **2×8cm (28×6)**. Hole counts were measured from the physical boards; all four share one border constant and reproduce their catalogue size to within 0.3mm.
+   - **Edge solder pads** (the oversized slots down each side) are optional per board and are ordinary solderable holes: they join nets, accept wires and participate in DRC. They are named `L`/`R` plus the row.
+   - The corner-hole **drill diameter is the one dimension not confirmed with calipers** — the reference photograph resolves ~5 px/mm. It is editable per board in the inspector, and it is the number an enclosure standoff has to match.
+
+8. **Export for CAD**
+   - **STEP (AP214)** — `File → Export STEP (3D)...` writes one solid per board and per component. Boards are prisms drilled at their mounting holes; components are bounding prisms extruded from library body heights. Enough for enclosure clearance, standoff alignment and fastener placement. The 2.54mm hole matrix is deliberately not drilled: hundreds of cylindrical faces cost real time in every CAD kernel and nothing passes through those holes from outside.
+   - Component heights are nominal values for the common variant of each part. Parts sold in several heights — tactile switches especially — can be overridden per placement in the inspector.
+   - **PNG front & back** — `File → Export Board Images (PNG)...` renders both sides of every board at exactly its millimetre extents. STEP carries per-face colour but has no texture concept, so artwork travels as a separate image: apply the PNG to the solid's top face at the board's own width and height and it lands 1:1 with no scaling guesswork.
+
 ## Building & Running with Nix
 
 ```bash
@@ -61,4 +72,24 @@ nix develop --command cargo-clippy clippy --all-targets -- -D warnings
 
 Tests cover double-click placement with simulated pointer events, keyboard commands,
 move/paste validation and undo/cancel behavior, automatic ghost mode, mirrored camera
-transforms, headless rendering of both sides, and font-independent icon geometry.
+transforms, headless rendering of both sides, font-independent icon geometry, board
+millimetre geometry and pad clearances, and the export coordinate frames.
+
+### Export checks that need more than `cargo test`
+
+Two export paths cannot be judged from inside the test suite, and both have already hidden
+a real defect behind a passing build:
+
+```bash
+# Round-trip a STEP export through FreeCAD's OpenCASCADE kernel.
+# Catches faces that are well-formed but fail to sew into solids.
+nix develop --command ./tools/validate_step.sh
+
+# Render every board front and back through a real GL context.
+# A uniformly-coloured output means the render failed without erroring.
+nix develop --command ./tools/validate_png.sh
+```
+
+`validate_step.sh` needs FreeCAD (`FREECAD=/path/to/freecadcmd` to override the default
+macOS location). `validate_png.sh` opens a window briefly, since offscreen rendering needs
+a GPU context that only exists inside one.
