@@ -42,7 +42,7 @@
 7. **Real Physical Dimensions**
    - Boards carry a millimetre outline (border, thickness, corner radius) and corner hole geometry (inset, drill, pad) alongside their hole lattice, so a board is the size it claims to be rather than a hole count with an arbitrary margin.
    - The four boards of the standard double-sided FR4 kit ship as presets: **5×7cm (24×18)**, **4×6cm (20×14)**, **3×7cm (24×10)** and **2×8cm (28×6)**. Hole counts were measured from the physical boards; all four share one border constant and reproduce their catalogue size to within 0.3mm.
-   - **Edge solder pads** (the oversized slots down each side) are optional per board and are ordinary solderable holes: they join nets, accept wires and participate in DRC. They are named `L`/`R` plus the row.
+   - **Edge solder pads** (the oversized slots down each side) are optional per board and are ordinary solderable holes: they join nets, accept wires and participate in DRC, on both sides of the board. They are named `L`/`R` plus the row. Their offset from the hole field and their size are set in millimetres, so a pad can be matched to a measured one — the real pads sit ~1.5 pitches out, which is off the integer lattice, so a pad keeps a lattice identity for topology and a separate millimetre position for geometry.
    - The corner-hole **drill diameter is the one dimension not confirmed with calipers** — the reference photograph resolves ~5 px/mm. It is editable per board in the inspector, and it is the number an enclosure standoff has to match.
 
 8. **Export for CAD**

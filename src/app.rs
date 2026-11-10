@@ -2802,7 +2802,9 @@ impl PerfworkApp {
             .hover_pos()
             .or_else(|| ui.input(|i| i.pointer.latest_pos()));
         let pointer_world = pointer_screen.map(|p| self.viewport.screen_to_world(canvas_rect, p));
-        let hovered_hole = pointer_world.map(|w| w.snap_to_grid());
+        // Not `snap_to_grid`: edge pads sit half a pitch off the lattice, so resolving the
+        // pointer has to ask the project, or they cannot be clicked at all.
+        let hovered_hole = pointer_world.map(|w| self.project.hole_at_world(w));
         if response.hovered() && !self.show_add_dialog && !self.show_json_modal {
             if let Some(hole) = hovered_hole {
                 self.last_pointer_grid = hole;

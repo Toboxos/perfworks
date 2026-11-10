@@ -316,29 +316,75 @@ impl EdgeSide {
 
 /// Oversized elongated solder pads running down the left and right board edges.
 ///
-/// On the real board these sit about 1.5 pitches outboard of the hole field, which is off
-/// the integer lattice the whole model is built on. They are instead placed exactly one
-/// pitch out and one per row, so they behave as ordinary solderable holes everywhere —
-/// netlist, hit-testing, DRC — at the cost of sitting ~0.7mm further inboard than the
-/// physical pads. Nothing mounts to them, so the deviation is harmless.
+/// These sit about 1.5 hole pitches outboard of the matrix on the real board, which is off
+/// the integer lattice everything else is built on. Rather than round to 1 pitch (which
+/// lands them on top of the row labels) or 2 (which hangs half the pad off the substrate),
+/// the pad keeps a *lattice identity* for topology and a separate *millimetre position*
+/// for geometry. Nets, DRC and hit-testing key off the former; drawing and export use the
+/// latter.
 ///
-/// Two pitches would be truer to the spacing but puts the pad centre 0.72mm from the board
-/// edge, which hangs half the pad off the substrate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// Every dimension is editable per board so a pad can be matched to a measured one.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EdgePads {
     pub left: bool,
     pub right: bool,
+    /// Distance from the outermost hole column to the pad centres, in mm.
+    /// 3.81mm is 1.5 pitches, measured off the 5×7 board.
+    #[serde(default = "default_edge_pad_offset")]
+    pub offset_mm: f32,
+    /// Pad size across the board, in mm
+    #[serde(default = "default_edge_pad_width")]
+    pub width_mm: f32,
+    /// Pad size along the board, in mm
+    #[serde(default = "default_edge_pad_height")]
+    pub height_mm: f32,
+}
+
+fn default_edge_pad_offset() -> f32 {
+    3.81
+}
+fn default_edge_pad_width() -> f32 {
+    2.6
+}
+fn default_edge_pad_height() -> f32 {
+    1.3
+}
+
+impl Default for EdgePads {
+    fn default() -> Self {
+        Self {
+            left: false,
+            right: false,
+            offset_mm: default_edge_pad_offset(),
+            width_mm: default_edge_pad_width(),
+            height_mm: default_edge_pad_height(),
+        }
+    }
 }
 
 impl EdgePads {
     pub const NONE: EdgePads = EdgePads {
         left: false,
         right: false,
+        offset_mm: 3.81,
+        width_mm: 2.6,
+        height_mm: 1.3,
     };
     pub const BOTH: EdgePads = EdgePads {
         left: true,
         right: true,
+        offset_mm: 3.81,
+        width_mm: 2.6,
+        height_mm: 1.3,
     };
+
+    /// Half-extents of a pad in pitch units, for geometry that works in world space.
+    pub fn half_extents_pitch(self) -> (f32, f32) {
+        (
+            self.width_mm * 0.5 / PITCH_MM,
+            self.height_mm * 0.5 / PITCH_MM,
+        )
+    }
 
     pub fn enabled(self, side: EdgeSide) -> bool {
         match side {
@@ -352,8 +398,9 @@ impl EdgePads {
     }
 }
 
-/// How far outboard of the hole field the edge pad strips sit, in pitch units.
-pub const EDGE_PAD_OFFSET: i32 = 1;
+/// Minimum lattice separation between an edge pad and the hole matrix. A pad nearer than
+/// one whole pitch would share a lattice column with the matrix and stop being addressable.
+pub const MIN_EDGE_PAD_OFFSET: i32 = 1;
 
 /// A perfboard, stripboard, or breadboard placed on the workspace plane
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -440,12 +487,75 @@ impl Perfboard {
         self.global_to_local(global).is_some()
     }
 
+    /// Lattice offset of the edge pad columns, in whole pitches.
+    ///
+    /// This is the pad's *identity*, not where it is drawn: it is what makes an edge pad a
+    /// `GridPos` the netlist and DRC can key off. The physical position comes from
+    /// [`EdgePads::offset_mm`] and the two deliberately disagree by up to half a pitch.
+    pub fn edge_pad_lattice_offset(&self) -> i32 {
+        (self.edge_pads.offset_mm / PITCH_MM)
+            .round()
+            .max(MIN_EDGE_PAD_OFFSET as f32) as i32
+    }
+
     /// Column index of an edge pad strip, in board-local coordinates.
     pub fn edge_pad_col(&self, side: EdgeSide) -> i32 {
+        let off = self.edge_pad_lattice_offset();
         match side {
-            EdgeSide::Left => -EDGE_PAD_OFFSET,
-            EdgeSide::Right => self.cols as i32 - 1 + EDGE_PAD_OFFSET,
+            EdgeSide::Left => -off,
+            EdgeSide::Right => self.cols as i32 - 1 + off,
         }
+    }
+
+    /// World position an edge pad is actually drawn at, in pitch units.
+    fn edge_pad_world_x(&self, side: EdgeSide) -> f32 {
+        let off = self.edge_pads.offset_mm / PITCH_MM;
+        match side {
+            EdgeSide::Left => self.origin.col as f32 - off,
+            EdgeSide::Right => (self.origin.col + self.cols as i32 - 1) as f32 + off,
+        }
+    }
+
+    /// Where a hole this board provides actually sits in world space.
+    ///
+    /// Matrix holes are on the lattice; edge pads are not. Everything that draws, exports
+    /// or measures a hole must go through this rather than `WorldPos::from_grid`, or edge
+    /// pads end up drawn half a pitch from where they can be clicked.
+    pub fn hole_world_pos(&self, global: GridPos) -> WorldPos {
+        match self.edge_pad_at(global) {
+            Some((side, row)) => {
+                WorldPos::new(self.edge_pad_world_x(side), (self.origin.row + row) as f32)
+            }
+            None => WorldPos::from_grid(global),
+        }
+    }
+
+    /// The edge pad under `world`, if any. Needed because an edge pad cannot be found by
+    /// snapping to the nearest lattice point: it sits between two of them.
+    pub fn edge_pad_hit(&self, world: WorldPos) -> Option<GridPos> {
+        if !self.edge_pads.any() {
+            return None;
+        }
+        let (hx, hy) = self.edge_pads.half_extents_pitch();
+        // A little generous, so a pad is no harder to hit than an ordinary hole.
+        let (hx, hy) = (hx.max(0.3), hy.max(0.3));
+        for side in EdgeSide::ALL {
+            if !self.edge_pads.enabled(side) {
+                continue;
+            }
+            if (world.x - self.edge_pad_world_x(side)).abs() > hx {
+                continue;
+            }
+            for r in self.edge_pad_rows() {
+                if (world.y - (self.origin.row + r) as f32).abs() <= hy {
+                    return Some(GridPos::new(
+                        self.origin.col + self.edge_pad_col(side),
+                        self.origin.row + r,
+                    ));
+                }
+            }
+        }
+        None
     }
 
     /// Rows that carry an edge pad.
@@ -531,10 +641,13 @@ impl Perfboard {
     /// Board-local millimetre position of a global hole, measured from the top-left
     /// substrate corner. This is the frame STEP and image export both work in.
     pub fn hole_to_local_mm(&self, global: GridPos) -> (f32, f32) {
-        let (mx, my) = (self.outline.margin_x_mm, self.outline.margin_y_mm);
+        // Via hole_world_pos, so an edge pad reports where it physically is rather than
+        // where its lattice identity sits. Export and rendering must agree on this or the
+        // PNG decal lands offset from the holes in the STEP solid.
+        let w = self.hole_world_pos(global);
         (
-            (global.col - self.origin.col) as f32 * PITCH_MM + mx,
-            (global.row - self.origin.row) as f32 * PITCH_MM + my,
+            (w.x - self.origin.col as f32) * PITCH_MM + self.outline.margin_x_mm,
+            (w.y - self.origin.row as f32) * PITCH_MM + self.outline.margin_y_mm,
         )
     }
 
@@ -866,16 +979,40 @@ pub struct Wire {
 impl Wire {
     /// Returns all control points in world coordinates from start_hole through waypoints to end_hole
     pub fn all_control_points(&self) -> Vec<WorldPos> {
+        self.control_points_between(
+            WorldPos::from_grid(self.start_hole),
+            WorldPos::from_grid(self.end_hole),
+        )
+    }
+
+    /// Control points with the two endpoints supplied by the caller.
+    ///
+    /// A wire landing on an edge pad does not end on the lattice, and a wire has no way to
+    /// know that by itself — only the board does. Callers that can resolve the endpoints
+    /// (see `Project::hole_world_pos`) should, or the wire stops half a pitch short of the
+    /// pad it is soldered to.
+    pub fn control_points_between(&self, start: WorldPos, end: WorldPos) -> Vec<WorldPos> {
         let mut pts = Vec::with_capacity(self.waypoints.len() + 2);
-        pts.push(WorldPos::from_grid(self.start_hole));
+        pts.push(start);
         pts.extend_from_slice(&self.waypoints);
-        pts.push(WorldPos::from_grid(self.end_hole));
+        pts.push(end);
         pts
     }
 
     /// Sample the wire path into a sequence of world points (either straight segments or Catmull-Rom spline)
     pub fn sampled_points(&self) -> Vec<WorldPos> {
-        let ctrl = self.all_control_points();
+        self.sample(self.all_control_points())
+    }
+
+    /// Sample with endpoints resolved against the project, so edge pads land correctly.
+    pub fn sampled_points_in(&self, project: &Project) -> Vec<WorldPos> {
+        self.sample(self.control_points_between(
+            project.hole_world_pos(self.start_hole),
+            project.hole_world_pos(self.end_hole),
+        ))
+    }
+
+    fn sample(&self, ctrl: Vec<WorldPos>) -> Vec<WorldPos> {
         match self.mode {
             WireMode::Straight => ctrl,
             WireMode::Spline => sample_catmull_rom(&ctrl, 16),
@@ -1383,6 +1520,29 @@ impl Project {
     /// The topmost board offering a solderable hole at `global` — matrix hole or edge pad.
     pub fn find_board_at_hole(&self, global: GridPos) -> Option<&Perfboard> {
         self.boards.iter().rev().find(|b| b.provides_hole(global))
+    }
+
+    /// Where a hole sits in world space, accounting for boards whose edge pads are drawn
+    /// off the lattice. Falls back to the lattice position for holes on no board, so this
+    /// is always safe to use in place of `WorldPos::from_grid`.
+    pub fn hole_world_pos(&self, global: GridPos) -> WorldPos {
+        self.find_board_at_hole(global)
+            .map(|b| b.hole_world_pos(global))
+            .unwrap_or_else(|| WorldPos::from_grid(global))
+    }
+
+    /// Resolve a pointer position to the hole it means.
+    ///
+    /// Snapping to the nearest lattice point is right for everything except edge pads,
+    /// which sit half a pitch off it — those are hit-tested against their drawn rectangle
+    /// first. This is the single entry point for "what hole is under the cursor"; going
+    /// straight to `snap_to_grid` makes edge pads unclickable.
+    pub fn hole_at_world(&self, world: WorldPos) -> GridPos {
+        self.boards
+            .iter()
+            .rev()
+            .find_map(|b| b.edge_pad_hit(world))
+            .unwrap_or_else(|| world.snap_to_grid())
     }
 
     pub fn find_board_at_world(&self, pos: WorldPos) -> Option<&Perfboard> {

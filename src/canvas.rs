@@ -323,12 +323,20 @@ pub fn render_workspace(
     let draw_solder_all = |painter: &egui::Painter| {
         for solder in &project.solder_lines {
             let is_selected = selected.contains(&SelectedItem::SolderLine(solder.id));
-            draw_solder_line(painter, canvas_rect, viewport, solder, is_selected, false);
+            draw_solder_line(
+                painter,
+                canvas_rect,
+                viewport,
+                project,
+                solder,
+                is_selected,
+                false,
+            );
         }
         if let Some(nodes) = preview.active_solder_in_progress {
             if !nodes.is_empty() {
                 let temp = SolderLine::new(nodes.to_vec());
-                draw_solder_line(painter, canvas_rect, viewport, &temp, true, true);
+                draw_solder_line(painter, canvas_rect, viewport, project, &temp, true, true);
             }
         }
     };
@@ -357,7 +365,7 @@ pub fn render_workspace(
             .filter(|w| w.layer == crate::model::WireLayer::TopComponent)
         {
             let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
-            draw_wire(painter, canvas_rect, viewport, wire, is_selected);
+            draw_wire(painter, canvas_rect, viewport, project, wire, is_selected);
         }
         // Now foreground Solder side traces and bottom wires
         draw_solder_all(painter);
@@ -367,7 +375,7 @@ pub fn render_workspace(
             .filter(|w| w.layer == crate::model::WireLayer::BottomSolder)
         {
             let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
-            draw_wire(painter, canvas_rect, viewport, wire, is_selected);
+            draw_wire(painter, canvas_rect, viewport, project, wire, is_selected);
         }
     } else {
         // Normal Top View
@@ -379,7 +387,7 @@ pub fn render_workspace(
             .filter(|w| w.layer == crate::model::WireLayer::BottomSolder)
         {
             let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
-            draw_wire(painter, canvas_rect, viewport, wire, is_selected);
+            draw_wire(painter, canvas_rect, viewport, project, wire, is_selected);
         }
 
         for conn in &project.connectors {
@@ -403,7 +411,7 @@ pub fn render_workspace(
             .filter(|w| w.layer == crate::model::WireLayer::TopComponent)
         {
             let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
-            draw_wire(painter, canvas_rect, viewport, wire, is_selected);
+            draw_wire(painter, canvas_rect, viewport, project, wire, is_selected);
         }
     }
 
@@ -488,7 +496,15 @@ pub fn render_workspace(
             .filter(|s| focus.solder.contains(&s.id))
         {
             let is_selected = selected.contains(&SelectedItem::SolderLine(solder.id));
-            draw_solder_line(painter, canvas_rect, viewport, solder, is_selected, false);
+            draw_solder_line(
+                painter,
+                canvas_rect,
+                viewport,
+                project,
+                solder,
+                is_selected,
+                false,
+            );
         }
         for conn in project
             .connectors
@@ -510,13 +526,13 @@ pub fn render_workspace(
         }
         for wire in project.wires.iter().filter(|w| focus.wires.contains(&w.id)) {
             let is_selected = selected.contains(&SelectedItem::Wire(wire.id));
-            draw_wire(painter, canvas_rect, viewport, wire, is_selected);
+            draw_wire(painter, canvas_rect, viewport, project, wire, is_selected);
         }
     }
 
     // 11. Render Hovered Hole Crosshair Reticle
     if let Some(hole) = preview.hovered_hole {
-        let p = viewport.grid_to_screen(canvas_rect, hole);
+        let p = viewport.world_to_screen(canvas_rect, project.hole_world_pos(hole));
         let r = (viewport.pixels_per_pitch * 0.42).max(4.0);
         painter.circle_stroke(
             p,
@@ -641,7 +657,7 @@ fn draw_net_overlay(
         let pts: Vec<Pos2> = solder
             .nodes
             .iter()
-            .map(|&g| viewport.grid_to_screen(canvas_rect, g))
+            .map(|&g| viewport.world_to_screen(canvas_rect, project.hole_world_pos(g)))
             .collect();
         let base = (ppp * 0.56 * solder.width_scale).max(4.0);
         for (extra, alpha) in GLOW_PASSES {
@@ -665,7 +681,7 @@ fn draw_net_overlay(
 
     let (wash_r, wash_a) = STRIP_WASH;
     for hole in net.holes.iter().filter(|h| !is_contact(h)) {
-        let p = viewport.grid_to_screen(canvas_rect, *hole);
+        let p = viewport.world_to_screen(canvas_rect, project.hole_world_pos(*hole));
         if visible(p) {
             painter.circle_filled(p, (ppp * wash_r).max(2.0), tint(wash_a));
         }
@@ -674,7 +690,7 @@ fn draw_net_overlay(
     // 3. Contacts: concentric halos, all wider than the pad so the copper stays visible
     //    through the middle.
     for &hole in &net.contacts {
-        let p = viewport.grid_to_screen(canvas_rect, hole);
+        let p = viewport.world_to_screen(canvas_rect, project.hole_world_pos(hole));
         if !visible(p) {
             continue;
         }
@@ -1008,14 +1024,20 @@ fn draw_board(
 
     // Oversized elongated edge pads. Drawn as rounded slots rather than round pads so they
     // read as the chunky wire-landing pads they are on the real board.
-    for g in board.edge_pad_holes() {
-        let center = viewport.grid_to_screen(canvas_rect, g);
-        if !canvas_rect.expand(pad_radius * 3.0).contains(center) {
-            continue;
+    {
+        let (half_w, half_h) = board.edge_pads.half_extents_pitch();
+        for g in board.edge_pad_holes() {
+            // Drawn at the pad's millimetre position, which is deliberately off the
+            // lattice; see EdgePads.
+            let center = viewport.world_to_screen(canvas_rect, board.hole_world_pos(g));
+            if !canvas_rect.expand(pad_radius * 3.0).contains(center) {
+                continue;
+            }
+            let slot =
+                Rect::from_center_size(center, Vec2::new(ppp * half_w * 2.0, ppp * half_h * 2.0));
+            painter.rect_filled(slot, ppp * half_h, copper_color);
+            painter.circle_filled(center, drill_radius, drill_color);
         }
-        let slot = Rect::from_center_size(center, Vec2::new(ppp * 1.02, ppp * 0.52));
-        painter.rect_filled(slot, ppp * 0.3, copper_color);
-        painter.circle_filled(center, drill_radius, drill_color);
     }
 
     // Draw row & column coordinate identifiers along board edges
@@ -1132,6 +1154,7 @@ fn draw_solder_line(
     painter: &egui::Painter,
     canvas_rect: Rect,
     viewport: &Viewport,
+    project: &Project,
     solder: &SolderLine,
     is_selected: bool,
     is_preview: bool,
@@ -1160,7 +1183,7 @@ fn draw_solder_line(
     let screen_pts: Vec<Pos2> = solder
         .nodes
         .iter()
-        .map(|&g| viewport.grid_to_screen(canvas_rect, g))
+        .map(|&g| viewport.world_to_screen(canvas_rect, project.hole_world_pos(g)))
         .collect();
 
     // Draw thick metallic segments
@@ -1548,11 +1571,12 @@ fn draw_wire(
     painter: &egui::Painter,
     canvas_rect: Rect,
     viewport: &Viewport,
+    project: &Project,
     wire: &Wire,
     is_selected: bool,
 ) {
     let ppp = viewport.pixels_per_pitch;
-    let pts_world = wire.sampled_points();
+    let pts_world = wire.sampled_points_in(project);
     let pts_screen: Vec<Pos2> = pts_world
         .iter()
         .map(|&w| viewport.world_to_screen(canvas_rect, w))
@@ -1690,11 +1714,13 @@ mod viewport_tests {
                         ..Default::default()
                     };
                     let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+                    let project = Project::new_empty("t");
                     let output = ctx.run(egui::RawInput::default(), |ctx| {
                         draw_wire(
                             &ctx.layer_painter(egui::LayerId::background()),
                             rect,
                             &viewport,
+                            &project,
                             &wire,
                             selected,
                         );

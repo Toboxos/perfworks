@@ -807,6 +807,73 @@ mod tests {
         }
     }
 
+    /// An edge pad is drawn half a pitch from its lattice identity, so the only way to
+    /// click one is an explicit hit test. If that ever regresses, the pads silently become
+    /// unselectable: visible, on a net, and impossible to pick.
+    #[test]
+    fn an_edge_pad_can_be_hit_where_it_is_drawn_not_where_its_lattice_point_is() {
+        use crate::model::{GridPos, Perfboard, Project};
+
+        // Deliberately not at the origin: rounding a half-pitch offset depends on the
+        // board's position, which is exactly why snapping cannot be relied on here.
+        let mut snapping_ever_disagreed = false;
+        for origin in [
+            GridPos::new(0, 0),
+            GridPos::new(10, 4),
+            GridPos::new(-7, -3),
+        ] {
+            let mut project = Project::new_empty("t");
+            let mut board = Perfboard::new("B", origin, 12, 8);
+            board.edge_pads = EdgePads::BOTH;
+            board.mounting_holes = false;
+            project.boards.push(board);
+
+            let board = &project.boards[0];
+            for pad in board.edge_pad_holes() {
+                let drawn = board.hole_world_pos(pad);
+                assert_eq!(
+                    project.hole_at_world(drawn),
+                    pad,
+                    "pad {pad:?} on a board at {origin:?} is drawn at {drawn:?} but \
+                     resolves elsewhere"
+                );
+                if drawn.snap_to_grid() != pad {
+                    snapping_ever_disagreed = true;
+                }
+            }
+        }
+
+        // A half-pitch offset rounds toward or away from the pad depending on the board's
+        // position on the global lattice, so snapping is right for some boards and wrong
+        // for others. That inconsistency is the whole reason hole_at_world exists; if it
+        // ever stops happening, the offset is no longer a half pitch.
+        assert!(
+            snapping_ever_disagreed,
+            "snapping agreed everywhere, so this test no longer proves the hit test is needed"
+        );
+    }
+
+    /// The pads must not sit under the row identifiers, which the renderer places 0.74
+    /// pitch outboard of the first and last columns.
+    #[test]
+    fn edge_pads_clear_the_row_labels() {
+        const LABEL_OFFSET_PITCH: f32 = 0.74;
+        for preset in standard_board_library()
+            .iter()
+            .filter(|p| p.edge_pads.any())
+        {
+            let gap = preset.edge_pads.offset_mm
+                - LABEL_OFFSET_PITCH * crate::model::PITCH_MM
+                - preset.edge_pads.width_mm * 0.5;
+            assert!(
+                gap > 0.0,
+                "{}: edge pad overlaps the row label by {:.2}mm",
+                preset.id,
+                -gap
+            );
+        }
+    }
+
     /// An edge pad that hangs off the substrate is not a pad, it is a drawing error.
     #[test]
     fn edge_pads_lie_entirely_within_the_substrate() {
@@ -900,13 +967,16 @@ mod tests {
         board.mounting_holes = true;
         assert_eq!(board.edge_pad_holes().len(), 6, "3 rows per side");
         assert!(
-            board.edge_pad_at(GridPos::new(9, 4)).is_none(),
+            board.edge_pad_at(GridPos::new(8, 4)).is_none(),
             "row 0 belongs to the corner mounting hole"
         );
 
         board.mounting_holes = false;
-        let left = GridPos::new(9, 4);
-        let right = GridPos::new(18, 8);
+        // Lattice identity is 2 pitches out (3.81mm / 2.54 rounds to 2), even though the
+        // pad is drawn at 1.5.
+        assert_eq!(board.edge_pad_lattice_offset(), 2);
+        let left = GridPos::new(8, 4);
+        let right = GridPos::new(19, 8);
         for p in [left, right] {
             assert!(
                 !board.contains_global_hole(p),
@@ -919,6 +989,6 @@ mod tests {
         assert_eq!(board.format_global_hole(left).as_deref(), Some("LA"));
 
         // One row past the end is off the board entirely.
-        assert!(board.edge_pad_at(GridPos::new(9, 9)).is_none());
+        assert!(board.edge_pad_at(GridPos::new(8, 9)).is_none());
     }
 }
