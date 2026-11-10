@@ -417,6 +417,15 @@ pub struct Perfboard {
     pub col_label_style: AxisLabelStyle,
     /// Label style along rows (left/right edges)
     pub row_label_style: AxisLabelStyle,
+    /// Count columns from the right-hand edge instead of the left.
+    ///
+    /// The board itself cannot be rotated, so this is how a design is matched to a
+    /// physical board that happens to be the other way round on the bench.
+    #[serde(default)]
+    pub col_labels_reversed: bool,
+    /// Count rows from the bottom edge instead of the top.
+    #[serde(default)]
+    pub row_labels_reversed: bool,
     /// Show labels on both sides (top+bottom, left+right)
     pub labels_both_sides: bool,
     /// Board substrate kind (Perfboard, Stripboard, Breadboard)
@@ -448,6 +457,8 @@ impl Perfboard {
             rows: rows.max(1),
             col_label_style: AxisLabelStyle::Numbers1Based,
             row_label_style: AxisLabelStyle::LettersUpper,
+            col_labels_reversed: false,
+            row_labels_reversed: false,
             labels_both_sides: true,
             kind: BoardKind::Perfboard,
             theme: BoardTheme::ClassicGreen,
@@ -656,14 +667,51 @@ impl Perfboard {
         pos.x >= min.x && pos.x <= max.x && pos.y >= min.y && pos.y <= max.y
     }
 
+    /// Identifier shown for column `index`, counted from the left.
+    ///
+    /// The single place column numbering is decided. The board edge labels and every
+    /// coordinate readout go through here, so a reversed board cannot end up labelled one
+    /// way on the canvas and another way in the sidebar.
+    pub fn col_label(&self, index: u32) -> String {
+        self.col_label_style
+            .format_index(self.col_label_index(index))
+    }
+
+    /// Identifier shown for row `index`, counted from the top.
+    pub fn row_label(&self, index: u32) -> String {
+        self.row_label_style
+            .format_index(self.row_label_index(index))
+    }
+
+    fn col_label_index(&self, index: u32) -> u32 {
+        if self.col_labels_reversed {
+            self.cols.saturating_sub(1).saturating_sub(index)
+        } else {
+            index
+        }
+    }
+
+    fn row_label_index(&self, index: u32) -> u32 {
+        if self.row_labels_reversed {
+            self.rows.saturating_sub(1).saturating_sub(index)
+        } else {
+            index
+        }
+    }
+
     pub fn format_hole_coord(&self, local: GridPos) -> String {
+        // A hidden axis still needs *some* identifier in a coordinate readout, so it falls
+        // back to the default style for that axis — reversal included, since the hole is
+        // still in the same place on the board.
         let col_str = match self.col_label_style {
-            AxisLabelStyle::Hidden => (local.col + 1).to_string(),
-            style => style.format_index(local.col as u32),
+            AxisLabelStyle::Hidden => (self.col_label_index(local.col as u32) + 1).to_string(),
+            _ => self.col_label(local.col as u32),
         };
         let row_str = match self.row_label_style {
-            AxisLabelStyle::Hidden => index_to_letters(local.row as u32, true),
-            style => style.format_index(local.row as u32),
+            AxisLabelStyle::Hidden => {
+                index_to_letters(self.row_label_index(local.row as u32), true)
+            }
+            _ => self.row_label(local.row as u32),
         };
         format!("{}{}", row_str, col_str)
     }
@@ -676,8 +724,8 @@ impl Perfboard {
         }
         self.edge_pad_at(global).map(|(side, row)| {
             let row_str = match self.row_label_style {
-                AxisLabelStyle::Hidden => index_to_letters(row as u32, true),
-                style => style.format_index(row as u32),
+                AxisLabelStyle::Hidden => index_to_letters(self.row_label_index(row as u32), true),
+                _ => self.row_label(row as u32),
             };
             format!("{}{}", side.prefix(), row_str)
         })
@@ -1629,6 +1677,106 @@ impl Project {
             Ok(())
         } else {
             Err(conflicts)
+        }
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    fn board() -> Perfboard {
+        let mut b = Perfboard::new("B", GridPos::new(5, 3), 24, 18);
+        b.col_label_style = AxisLabelStyle::Numbers1Based;
+        b.row_label_style = AxisLabelStyle::LettersUpper;
+        b
+    }
+
+    #[test]
+    fn reversing_counts_from_the_far_edge() {
+        let mut b = board();
+        assert_eq!(b.col_label(0), "1");
+        assert_eq!(b.col_label(23), "24");
+        assert_eq!(b.row_label(0), "A");
+        assert_eq!(b.row_label(17), "R");
+
+        b.col_labels_reversed = true;
+        b.row_labels_reversed = true;
+        assert_eq!(b.col_label(0), "24");
+        assert_eq!(b.col_label(23), "1");
+        assert_eq!(b.row_label(0), "R");
+        assert_eq!(b.row_label(17), "A");
+    }
+
+    #[test]
+    fn the_axes_reverse_independently() {
+        let mut b = board();
+        b.col_labels_reversed = true;
+        assert_eq!(b.col_label(0), "24");
+        assert_eq!(b.row_label(0), "A", "rows must be untouched");
+
+        let mut b = board();
+        b.row_labels_reversed = true;
+        assert_eq!(b.col_label(0), "1", "columns must be untouched");
+        assert_eq!(b.row_label(0), "R");
+    }
+
+    /// The canvas edge labels and every coordinate readout have to agree, or the sidebar
+    /// names a hole the board calls something else.
+    #[test]
+    fn hole_coordinates_follow_the_same_reversal_as_the_edge_labels() {
+        for (rc, rr) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut b = board();
+            b.col_labels_reversed = rc;
+            b.row_labels_reversed = rr;
+            for (col, row) in [(0, 0), (23, 17), (7, 11)] {
+                let coord = b.format_hole_coord(GridPos::new(col, row));
+                let expected = format!("{}{}", b.row_label(row as u32), b.col_label(col as u32));
+                assert_eq!(coord, expected, "at ({col},{row}) with reversal ({rc},{rr})");
+            }
+        }
+    }
+
+    /// Hiding an axis still has to produce an identifier for readouts, and that fallback
+    /// must respect reversal too — the hole has not moved.
+    #[test]
+    fn hidden_axes_still_reverse_in_coordinate_readouts() {
+        let mut b = board();
+        b.col_label_style = AxisLabelStyle::Hidden;
+        b.row_label_style = AxisLabelStyle::Hidden;
+        assert_eq!(b.format_hole_coord(GridPos::new(0, 0)), "A1");
+
+        b.col_labels_reversed = true;
+        b.row_labels_reversed = true;
+        assert_eq!(b.format_hole_coord(GridPos::new(0, 0)), "R24");
+    }
+
+    #[test]
+    fn edge_pad_names_reverse_with_their_rows() {
+        let mut b = board();
+        b.edge_pads = EdgePads::BOTH;
+        b.mounting_holes = false;
+        let top_left = b.local_to_global(GridPos::new(b.edge_pad_col(EdgeSide::Left), 0));
+        assert_eq!(b.format_global_hole(top_left).as_deref(), Some("LA"));
+
+        b.row_labels_reversed = true;
+        assert_eq!(b.format_global_hole(top_left).as_deref(), Some("LR"));
+    }
+
+    /// Reversal is presentation only. It must never move a hole, or a saved project would
+    /// change shape when the labels are flipped.
+    #[test]
+    fn reversal_does_not_move_any_hole() {
+        let plain = board();
+        let mut flipped = board();
+        flipped.col_labels_reversed = true;
+        flipped.row_labels_reversed = true;
+
+        assert_eq!(plain.world_bounds(), flipped.world_bounds());
+        for (col, row) in [(0, 0), (23, 17), (9, 4)] {
+            let g = plain.local_to_global(GridPos::new(col, row));
+            assert_eq!(plain.hole_world_pos(g), flipped.hole_world_pos(g));
+            assert_eq!(plain.hole_to_local_mm(g), flipped.hole_to_local_mm(g));
         }
     }
 }

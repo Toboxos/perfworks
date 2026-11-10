@@ -21,6 +21,7 @@
 3. **Multi-Board Plane & Customizable Perfboards**
    - Place multiple boards of custom column × row dimensions and move them freely on the 2D plane.
    - Customizable row and column coordinate identifiers per dimension: `1, 2, 3...`, `0, 1, 2...`, `A, B, C...`, `a, b, c...`, or hidden.
+   - **Reversible identifiers** per axis, independently: count columns right-to-left and/or rows bottom-to-top. Boards cannot be rotated, so this is how a design is matched to a physical board lying the other way round on the bench. It is presentation only — no hole moves, and the canvas edge labels and every coordinate readout share one source of truth, so they cannot disagree.
    - Supports **Perfboard** (isolated pads), **Stripboard** (horizontal or vertical copper strips with interactive track cuts), and **Breadboard** (terminal strips) across 5 PCB color themes.
 
 4. **Connector Pins, Parametric Headers & Standard Footprint Library**

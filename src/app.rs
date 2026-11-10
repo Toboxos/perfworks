@@ -288,6 +288,8 @@ pub struct PerfworkApp {
     pub new_board_mounting: MountingSpec,
     pub new_board_edge_pads: EdgePads,
     pub new_board_mounting_holes: bool,
+    pub new_board_col_reversed: bool,
+    pub new_board_row_reversed: bool,
     /// GL context for offscreen PNG rendering; `None` in headless tests.
     #[cfg(not(target_arch = "wasm32"))]
     pub gl: Option<std::sync::Arc<glow::Context>>,
@@ -373,6 +375,8 @@ impl Default for PerfworkApp {
             new_board_mounting: MountingSpec::default(),
             new_board_edge_pads: EdgePads::default(),
             new_board_mounting_holes: true,
+            new_board_col_reversed: false,
+            new_board_row_reversed: false,
             #[cfg(not(target_arch = "wasm32"))]
             gl: None,
 
@@ -1069,6 +1073,8 @@ impl PerfworkApp {
         board.mounting = self.new_board_mounting;
         board.edge_pads = self.new_board_edge_pads;
         board.mounting_holes = self.new_board_mounting_holes;
+        board.col_labels_reversed = self.new_board_col_reversed;
+        board.row_labels_reversed = self.new_board_row_reversed;
         Some(board)
     }
 
@@ -2053,6 +2059,12 @@ impl PerfworkApp {
                 }
             });
 
+        // Reversing is how a design is matched to a physical board lying the other way
+        // round on the bench, since the board itself cannot be rotated.
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut board.col_labels_reversed, "Reverse cols");
+            ui.checkbox(&mut board.row_labels_reversed, "Reverse rows");
+        });
         ui.checkbox(&mut board.labels_both_sides, "Labels on All 4 Edges");
 
         ui.add_space(4.0);
@@ -3630,6 +3642,19 @@ impl PerfworkApp {
                                                     );
                                                 }
                                             });
+                                    });
+                                    ui.end_row();
+
+                                    ui.label("Reverse Identifiers:");
+                                    ui.horizontal(|ui| {
+                                        ui.checkbox(
+                                            &mut self.new_board_col_reversed,
+                                            "Columns right-to-left",
+                                        );
+                                        ui.checkbox(
+                                            &mut self.new_board_row_reversed,
+                                            "Rows bottom-to-top",
+                                        );
                                     });
                                     ui.end_row();
 

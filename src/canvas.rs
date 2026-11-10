@@ -1049,7 +1049,7 @@ fn draw_board(
         // Column identifiers (Top & optionally Bottom)
         if board.col_label_style != AxisLabelStyle::Hidden {
             for c in 0..board.cols {
-                let text = board.col_label_style.format_index(c);
+                let text = board.col_label(c);
                 let top_pos = viewport.world_to_screen(
                     canvas_rect,
                     WorldPos::new(
@@ -1087,7 +1087,7 @@ fn draw_board(
         // Row identifiers (Left & optionally Right)
         if board.row_label_style != AxisLabelStyle::Hidden {
             for r in 0..board.rows {
-                let text = board.row_label_style.format_index(r);
+                let text = board.row_label(r);
                 let left_pos = viewport.world_to_screen(
                     canvas_rect,
                     WorldPos::new(
