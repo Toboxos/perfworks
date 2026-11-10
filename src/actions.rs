@@ -209,7 +209,10 @@ impl ContextAction for WireAlignSnap {
         ActionGroup::ToolOptions
     }
     fn applies(&self, scope: &ContextScope) -> bool {
+        // Also with a wire selected: that is when its waypoint handles are draggable, and
+        // dragging snaps too.
         scope.tool == crate::app::ToolMode::DrawWire
+            || matches!(scope.selected, [SelectedItem::Wire(_)])
     }
     fn ui(&self, ui: &mut Ui, scope: &ContextScope) -> Option<ContextIntent> {
         ui.selectable_label(scope.wire_align_snap, "Align")

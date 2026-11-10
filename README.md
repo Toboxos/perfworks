@@ -33,7 +33,7 @@
 
 5. **Wires (Straight & Spline) & Solder Traces**
    - **Wires (`W`)**: Must start and end at board holes while allowing arbitrary intermediate waypoints in between. Switch between **Straight (angled polyline)** and **Smooth Catmull-Rom Spline** routing (`Tab` while routing, or toggle per wire in the Inspector).
-   - **Alignment Snapping**: While routing, waypoints snap to the row or column of nearby wire points — endpoints and waypoints of every wire, including the one being drawn. Each axis locks independently, so a point can take its column from one wire and its row from another to square off a corner. A grey dashed guide runs back to each point that was matched. Toggle with **Align** in the context toolbar; landing on a board hole always outranks an alignment lock, so endpoints stay reachable.
+   - **Alignment Snapping**: While routing, waypoints snap to the row or column of nearby wire points — endpoints and waypoints of every wire, including the one being drawn. Each axis locks independently, so a point can take its column from one wire and its row from another to square off a corner. A grey dashed guide runs back to each point that was matched. The same snapping applies when dragging the waypoint handles of an existing selected wire. Toggle with **Align** in the context toolbar; landing on a board hole always outranks an alignment lock while routing, so endpoints stay reachable.
    - **Solder Connections (`S`)**: Drag or click across neighbor holes to create metallic solder bridges/traces. Soldered holes block new connector pins while still allowing other solder lines to connect onto them.
 
 6. **Ghost Mode & Solder-Side View**

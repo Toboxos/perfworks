@@ -22,6 +22,13 @@ use crate::model::{
 use crate::netlist::{NetName, Netlist};
 use crate::snap::SnapGuide;
 
+/// Identifies one waypoint of one wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WaypointRef {
+    pub wire: Uuid,
+    pub index: usize,
+}
+
 /// Pull radius for wire alignment snapping, in screen pixels. Converted to world units at
 /// the current zoom so the feel is constant.
 const WIRE_SNAP_PIXELS: f32 = 9.0;
@@ -1093,12 +1100,26 @@ impl PerfworkApp {
     ///
     /// Endpoints go through `hole_world_pos` rather than the lattice, so a wire landing on
     /// an edge pad offers the pad's real position to align against.
-    fn alignment_candidates(&self) -> Vec<WorldPos> {
+    ///
+    /// `exclude` drops one existing waypoint. A point being dragged is still in the
+    /// project, and at zero distance from itself it would capture both axes and pin the
+    /// cursor in place.
+    fn alignment_candidates(&self, exclude: Option<WaypointRef>) -> Vec<WorldPos> {
         let mut out = Vec::new();
         for w in &self.project.wires {
             out.push(self.project.hole_world_pos(w.start_hole));
             out.push(self.project.hole_world_pos(w.end_hole));
-            out.extend(w.waypoints.iter().copied());
+            for (i, wp) in w.waypoints.iter().enumerate() {
+                if exclude
+                    == Some(WaypointRef {
+                        wire: w.id,
+                        index: i,
+                    })
+                {
+                    continue;
+                }
+                out.push(*wp);
+            }
         }
         if let Some(start) = self.active_wire_start {
             out.push(self.project.hole_world_pos(start));
@@ -1121,6 +1142,7 @@ impl PerfworkApp {
         &self,
         world: WorldPos,
         hovered_hole: Option<GridPos>,
+        exclude: Option<WaypointRef>,
     ) -> (WorldPos, Vec<SnapGuide>) {
         if let Some(h) = hovered_hole {
             if self.project.find_board_at_hole(h).is_some() && world_pos_near_grid_center(world) {
@@ -1132,7 +1154,8 @@ impl PerfworkApp {
             // Tolerance in pixels, converted to world units, so the pull feels the same at
             // every zoom level.
             let tolerance = WIRE_SNAP_PIXELS / self.viewport.pixels_per_pitch.max(1.0);
-            let result = crate::snap::resolve(world, &self.alignment_candidates(), tolerance);
+            let result =
+                crate::snap::resolve(world, &self.alignment_candidates(exclude), tolerance);
             if result.is_snapped() {
                 return (result.pos, result.guides);
             }
@@ -1148,8 +1171,22 @@ impl PerfworkApp {
 
     /// Commit the next waypoint of the wire being routed, at the resolved cursor.
     fn push_wire_waypoint(&mut self, world: WorldPos, hovered_hole: Option<GridPos>) {
-        let (wp, _) = self.resolve_wire_cursor(world, hovered_hole);
+        let (wp, _) = self.resolve_wire_cursor(world, hovered_hole, None);
         self.active_wire_waypoints.push(wp);
+    }
+
+    /// Move an existing waypoint to the resolved cursor.
+    ///
+    /// Hole centres are deliberately not offered here (`hovered_hole` is `None`): a
+    /// waypoint is a bend in the route, and letting it click into a hole would draw a
+    /// junction the netlist does not agree exists.
+    fn drag_wire_waypoint(&mut self, target: WaypointRef, world: WorldPos) {
+        let (pos, _) = self.resolve_wire_cursor(world, None, Some(target));
+        if let Some(w) = self.project.wires.iter_mut().find(|w| w.id == target.wire) {
+            if let Some(wp) = w.waypoints.get_mut(target.index) {
+                *wp = pos;
+            }
+        }
     }
 
     fn build_preview_connector(&self, anchor: GridPos) -> Option<PlacedConnector> {
@@ -2972,9 +3009,19 @@ impl PerfworkApp {
         // Build active wire preview
         let wire_cursor_world = pointer_world.unwrap_or(WorldPos::new(0.0, 0.0));
         let mut snap_guides: Vec<SnapGuide> = Vec::new();
+        // Dragging an existing waypoint gets the same guides as drawing a new one. Both
+        // sides call resolve_wire_cursor with identical arguments rather than one of them
+        // re-deriving the position, which is the only reason the indicator can be trusted.
+        if let Some((wire, index)) = self.dragging_wire_waypoint {
+            if let Some(world) = pointer_world {
+                snap_guides = self
+                    .resolve_wire_cursor(world, None, Some(WaypointRef { wire, index }))
+                    .1;
+            }
+        }
         let wire_preview = self.active_wire_start.map(|start| {
             let (snapped_cursor, guides) =
-                self.resolve_wire_cursor(wire_cursor_world, hovered_hole);
+                self.resolve_wire_cursor(wire_cursor_world, hovered_hole, None);
             snap_guides = guides;
             (
                 start,
@@ -3155,16 +3202,8 @@ impl PerfworkApp {
                 }
 
                 if response.dragged_by(egui::PointerButton::Primary) {
-                    if let Some((wid, wp_idx)) = self.dragging_wire_waypoint {
-                        if let Some(w) = self.project.wires.iter_mut().find(|w| w.id == wid) {
-                            if let Some(wp) = w.waypoints.get_mut(wp_idx) {
-                                *wp = if self.wire_snap_waypoints_half_grid {
-                                    world_pos.snap_half_grid()
-                                } else {
-                                    world_pos
-                                };
-                            }
-                        }
+                    if let Some((wire, index)) = self.dragging_wire_waypoint {
+                        self.drag_wire_waypoint(WaypointRef { wire, index }, world_pos);
                     } else if let Some((cid, offset)) = self.dragging_connector {
                         let new_anchor =
                             GridPos::new(grid_pos.col - offset.col, grid_pos.row - offset.row);
@@ -4489,6 +4528,9 @@ mod interaction_tests {
                 vec![SelectedItem::Wire(wire)],
                 vec![
                     "wire.mode",
+                    // Reachable here because a selected wire's waypoints are draggable,
+                    // and dragging snaps.
+                    "wire.align_snap",
                     "wire.color",
                     "conductor.width",
                     "selection.zoom",
@@ -4661,7 +4703,7 @@ mod interaction_tests {
 
         // Just off the existing waypoint's row and column.
         let cursor = WorldPos::new(6.08, 5.06);
-        let (resolved, guides) = app.resolve_wire_cursor(cursor, None);
+        let (resolved, guides) = app.resolve_wire_cursor(cursor, None, None);
         assert_eq!(
             resolved,
             WorldPos::new(6.0, 5.0),
@@ -4678,6 +4720,96 @@ mod interaction_tests {
             app.active_wire_waypoints,
             vec![resolved],
             "the committed waypoint must equal what the guide promised"
+        );
+    }
+
+    /// Dragging an existing waypoint snaps exactly like placing a new one. This was the
+    /// gap: the drag handler had its own copy of the cursor logic and never asked the
+    /// resolver, so alignment worked while drawing and silently stopped once the wire
+    /// existed.
+    #[test]
+    fn dragging_an_existing_waypoint_snaps_like_drawing_one() {
+        let mut app = PerfworkApp::default();
+        app.project.wires.clear();
+        app.viewport.pixels_per_pitch = 30.0;
+
+        let reference = Uuid::new_v4();
+        app.project.wires.push(Wire {
+            id: reference,
+            label: String::new(),
+            start_hole: GridPos::new(2, 2),
+            end_hole: GridPos::new(2, 9),
+            waypoints: vec![WorldPos::new(6.0, 5.0)],
+            mode: WireMode::Straight,
+            color: RgbColor::new(255, 0, 0),
+            thickness: 1.0,
+            layer: WireLayer::TopComponent,
+        });
+        let edited = Uuid::new_v4();
+        app.project.wires.push(Wire {
+            id: edited,
+            label: String::new(),
+            start_hole: GridPos::new(11, 11),
+            end_hole: GridPos::new(14, 14),
+            waypoints: vec![WorldPos::new(12.0, 12.0)],
+            mode: WireMode::Straight,
+            color: RgbColor::new(0, 255, 0),
+            thickness: 1.0,
+            layer: WireLayer::TopComponent,
+        });
+
+        let target = WaypointRef {
+            wire: edited,
+            index: 0,
+        };
+        app.drag_wire_waypoint(target, WorldPos::new(6.07, 5.05));
+        assert_eq!(
+            app.project.wires[1].waypoints[0],
+            WorldPos::new(6.0, 5.0),
+            "a dragged waypoint must lock to the other wire's point"
+        );
+    }
+
+    /// A waypoint being dragged is still in the project. Left in the candidate list it
+    /// matches itself at zero distance, captures both axes, and the point cannot be moved
+    /// at all.
+    #[test]
+    fn a_dragged_waypoint_is_not_its_own_alignment_reference() {
+        let mut app = PerfworkApp::default();
+        app.project.wires.clear();
+        app.viewport.pixels_per_pitch = 30.0;
+
+        let id = Uuid::new_v4();
+        let origin = WorldPos::new(8.0, 8.0);
+        app.project.wires.push(Wire {
+            id,
+            label: String::new(),
+            start_hole: GridPos::new(4, 4),
+            end_hole: GridPos::new(12, 12),
+            waypoints: vec![origin],
+            mode: WireMode::Straight,
+            color: RgbColor::new(0, 255, 0),
+            thickness: 1.0,
+            layer: WireLayer::TopComponent,
+        });
+        app.wire_snap_waypoints_half_grid = false;
+
+        let target = WaypointRef { wire: id, index: 0 };
+        assert!(
+            app.alignment_candidates(None).contains(&origin),
+            "the waypoint is an ordinary candidate when nothing is excluded"
+        );
+        assert!(
+            !app.alignment_candidates(Some(target)).contains(&origin),
+            "but must drop out while it is the one being dragged"
+        );
+
+        // A nudge well inside the snap radius of where it already is.
+        let nudge = WorldPos::new(8.03, 8.02);
+        app.drag_wire_waypoint(target, nudge);
+        assert_eq!(
+            app.project.wires[0].waypoints[0], nudge,
+            "the point stuck to its old position instead of following the cursor"
         );
     }
 
@@ -4702,7 +4834,7 @@ mod interaction_tests {
 
         let cursor = WorldPos::new(6.08, 5.06);
         app.wire_align_snap = false;
-        let (off, guides) = app.resolve_wire_cursor(cursor, None);
+        let (off, guides) = app.resolve_wire_cursor(cursor, None, None);
         assert_eq!(off, cursor);
         assert!(guides.is_empty());
     }
@@ -4736,7 +4868,7 @@ mod interaction_tests {
         });
 
         let cursor = WorldPos::new(hole.col as f32 + 0.01, hole.row as f32 + 0.01);
-        let (resolved, guides) = app.resolve_wire_cursor(cursor, Some(hole));
+        let (resolved, guides) = app.resolve_wire_cursor(cursor, Some(hole), None);
         assert_eq!(resolved, app.project.hole_world_pos(hole));
         assert!(guides.is_empty(), "no guide when the hole wins");
     }
