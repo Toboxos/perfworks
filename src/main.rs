@@ -6,6 +6,7 @@ pub mod icons;
 pub mod library;
 pub mod model;
 pub mod netlist;
+pub mod snap;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {

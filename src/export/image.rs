@@ -226,6 +226,7 @@ mod native {
                         highlight_pinned: false,
                         focus_net: false,
                         conflict_nets: &[],
+                        snap_guides: &[],
                     };
                     render_workspace(&painter, rect, &viewport, project, &[], &preview);
                 });

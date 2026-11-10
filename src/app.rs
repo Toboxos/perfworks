@@ -20,6 +20,11 @@ use crate::model::{
     Wire, WireLayer, WireMode, WorldPos, PITCH_MM,
 };
 use crate::netlist::{NetName, Netlist};
+use crate::snap::SnapGuide;
+
+/// Pull radius for wire alignment snapping, in screen pixels. Converted to world units at
+/// the current zoom so the feel is constant.
+const WIRE_SNAP_PIXELS: f32 = 9.0;
 
 /// Active interactive tool in the CAD workspace
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,6 +294,8 @@ pub struct PerfworkApp {
     pub new_board_edge_pads: EdgePads,
     pub new_board_mounting_holes: bool,
     pub new_board_col_reversed: bool,
+    /// Align wire waypoints to the X/Y of nearby wire points while routing.
+    pub wire_align_snap: bool,
     pub new_board_row_reversed: bool,
     /// GL context for offscreen PNG rendering; `None` in headless tests.
     #[cfg(not(target_arch = "wasm32"))]
@@ -376,6 +383,7 @@ impl Default for PerfworkApp {
             new_board_edge_pads: EdgePads::default(),
             new_board_mounting_holes: true,
             new_board_col_reversed: false,
+            wire_align_snap: true,
             new_board_row_reversed: false,
             #[cfg(not(target_arch = "wasm32"))]
             gl: None,
@@ -828,6 +836,7 @@ impl PerfworkApp {
             highlighted_net: self.highlighted_net,
             wire_mode: self.wire_mode,
             wire_color: self.wire_color,
+            wire_align_snap: self.wire_align_snap,
             header_cols: self.header_cols,
             header_rows: self.header_rows,
             active_rotation: self.active_rotation,
@@ -881,6 +890,7 @@ impl PerfworkApp {
                 self.header_cols = cols;
                 self.header_rows = rows;
             }
+            ContextIntent::ToggleWireAlignSnap => self.wire_align_snap = !self.wire_align_snap,
             ContextIntent::RotatePlacement => {
                 self.active_rotation = self.active_rotation.next_cw();
                 if self.tool == ToolMode::PlaceBoard {
@@ -1076,6 +1086,70 @@ impl PerfworkApp {
         board.col_labels_reversed = self.new_board_col_reversed;
         board.row_labels_reversed = self.new_board_row_reversed;
         Some(board)
+    }
+
+    /// Points a wire waypoint can align to: every endpoint and waypoint of every existing
+    /// wire, plus the active wire's own start and waypoints.
+    ///
+    /// Endpoints go through `hole_world_pos` rather than the lattice, so a wire landing on
+    /// an edge pad offers the pad's real position to align against.
+    fn alignment_candidates(&self) -> Vec<WorldPos> {
+        let mut out = Vec::new();
+        for w in &self.project.wires {
+            out.push(self.project.hole_world_pos(w.start_hole));
+            out.push(self.project.hole_world_pos(w.end_hole));
+            out.extend(w.waypoints.iter().copied());
+        }
+        if let Some(start) = self.active_wire_start {
+            out.push(self.project.hole_world_pos(start));
+        }
+        out.extend(self.active_wire_waypoints.iter().copied());
+        out
+    }
+
+    /// Where the next wire point will land, and why.
+    ///
+    /// The one place this is decided. The preview and the click handler both call it, so
+    /// the dashed guide can never promise a position the click does not deliver — they
+    /// used to compute the cursor separately, which is exactly the kind of drift a snap
+    /// indicator must not have.
+    ///
+    /// Precedence is hole centre, then alignment, then the half-grid option. Hole centres
+    /// win because a wire can only *finish* on one; losing that to an alignment lock would
+    /// make endpoints unreachable.
+    fn resolve_wire_cursor(
+        &self,
+        world: WorldPos,
+        hovered_hole: Option<GridPos>,
+    ) -> (WorldPos, Vec<SnapGuide>) {
+        if let Some(h) = hovered_hole {
+            if self.project.find_board_at_hole(h).is_some() && world_pos_near_grid_center(world) {
+                return (self.project.hole_world_pos(h), Vec::new());
+            }
+        }
+
+        if self.wire_align_snap {
+            // Tolerance in pixels, converted to world units, so the pull feels the same at
+            // every zoom level.
+            let tolerance = WIRE_SNAP_PIXELS / self.viewport.pixels_per_pitch.max(1.0);
+            let result = crate::snap::resolve(world, &self.alignment_candidates(), tolerance);
+            if result.is_snapped() {
+                return (result.pos, result.guides);
+            }
+        }
+
+        let pos = if self.wire_snap_waypoints_half_grid {
+            world.snap_half_grid()
+        } else {
+            world
+        };
+        (pos, Vec::new())
+    }
+
+    /// Commit the next waypoint of the wire being routed, at the resolved cursor.
+    fn push_wire_waypoint(&mut self, world: WorldPos, hovered_hole: Option<GridPos>) {
+        let (wp, _) = self.resolve_wire_cursor(world, hovered_hole);
+        self.active_wire_waypoints.push(wp);
     }
 
     fn build_preview_connector(&self, anchor: GridPos) -> Option<PlacedConnector> {
@@ -2897,20 +2971,11 @@ impl PerfworkApp {
 
         // Build active wire preview
         let wire_cursor_world = pointer_world.unwrap_or(WorldPos::new(0.0, 0.0));
+        let mut snap_guides: Vec<SnapGuide> = Vec::new();
         let wire_preview = self.active_wire_start.map(|start| {
-            let snapped_cursor = if let Some(h) = hovered_hole {
-                if self.project.find_board_at_hole(h).is_some()
-                    && world_pos_near_grid_center(wire_cursor_world)
-                {
-                    WorldPos::from_grid(h)
-                } else if self.wire_snap_waypoints_half_grid {
-                    wire_cursor_world.snap_half_grid()
-                } else {
-                    wire_cursor_world
-                }
-            } else {
-                wire_cursor_world
-            };
+            let (snapped_cursor, guides) =
+                self.resolve_wire_cursor(wire_cursor_world, hovered_hole);
+            snap_guides = guides;
             (
                 start,
                 self.active_wire_waypoints.as_slice(),
@@ -2943,6 +3008,7 @@ impl PerfworkApp {
                 highlight_pinned,
                 focus_net: self.focus_net_mode,
                 conflict_nets: &conflict_nets,
+                snap_guides: &snap_guides,
                 ghost_board: ghost_board.as_ref(),
                 ghost_connectors: &ghost_connectors,
                 ghost_components: self.components_are_ghosted(),
@@ -3250,12 +3316,7 @@ impl PerfworkApp {
                                 false,
                             ));
                         } else {
-                            let wp = if self.wire_snap_waypoints_half_grid {
-                                world_pos.snap_half_grid()
-                            } else {
-                                world_pos
-                            };
-                            self.active_wire_waypoints.push(wp);
+                            self.push_wire_waypoint(world_pos, Some(grid_pos));
                         }
                     } else if occ.board_id.is_none() {
                         self.status_toast = Some((
@@ -4464,7 +4525,7 @@ mod interaction_tests {
                 "wire tool, nothing selected",
                 ToolMode::DrawWire,
                 vec![],
-                vec!["wire.mode", "wire.color"],
+                vec!["wire.mode", "wire.color", "wire.align_snap"],
             ),
             (
                 "header tool",
@@ -4571,6 +4632,113 @@ mod interaction_tests {
         app.apply_context_intent(ContextIntent::ZoomToSelection);
         let (min, max) = app.zoom_request.expect("zoom should be deferred");
         assert!(min.x < max.x && min.y <= max.y);
+    }
+
+    /// The dashed guide and the placed waypoint come from the same call, so they cannot
+    /// disagree. This asserts that contract directly: whatever the preview reports is what
+    /// a click commits.
+    #[test]
+    fn the_snap_guide_shows_exactly_where_the_waypoint_will_land() {
+        let mut app = PerfworkApp::default();
+        app.project.wires.clear();
+        app.tool = ToolMode::DrawWire;
+        app.wire_align_snap = true;
+        app.viewport.pixels_per_pitch = 30.0;
+
+        // An existing wire supplies the reference points.
+        app.project.wires.push(Wire {
+            id: Uuid::new_v4(),
+            label: String::new(),
+            start_hole: GridPos::new(2, 2),
+            end_hole: GridPos::new(2, 9),
+            waypoints: vec![WorldPos::new(6.0, 5.0)],
+            mode: WireMode::Straight,
+            color: RgbColor::new(255, 0, 0),
+            thickness: 1.0,
+            layer: WireLayer::TopComponent,
+        });
+        app.active_wire_start = Some(GridPos::new(10, 10));
+
+        // Just off the existing waypoint's row and column.
+        let cursor = WorldPos::new(6.08, 5.06);
+        let (resolved, guides) = app.resolve_wire_cursor(cursor, None);
+        assert_eq!(
+            resolved,
+            WorldPos::new(6.0, 5.0),
+            "should lock to both axes"
+        );
+        assert_eq!(guides.len(), 2);
+        assert!(
+            guides.iter().all(|g| g.snapped == resolved),
+            "a guide must terminate at the point that will actually be placed"
+        );
+
+        app.push_wire_waypoint(cursor, None);
+        assert_eq!(
+            app.active_wire_waypoints,
+            vec![resolved],
+            "the committed waypoint must equal what the guide promised"
+        );
+    }
+
+    #[test]
+    fn disabling_align_snap_leaves_the_cursor_untouched() {
+        let mut app = PerfworkApp::default();
+        app.project.wires.clear();
+        app.tool = ToolMode::DrawWire;
+        app.wire_snap_waypoints_half_grid = false;
+        app.viewport.pixels_per_pitch = 30.0;
+        app.project.wires.push(Wire {
+            id: Uuid::new_v4(),
+            label: String::new(),
+            start_hole: GridPos::new(2, 2),
+            end_hole: GridPos::new(2, 9),
+            waypoints: vec![WorldPos::new(6.0, 5.0)],
+            mode: WireMode::Straight,
+            color: RgbColor::new(255, 0, 0),
+            thickness: 1.0,
+            layer: WireLayer::TopComponent,
+        });
+
+        let cursor = WorldPos::new(6.08, 5.06);
+        app.wire_align_snap = false;
+        let (off, guides) = app.resolve_wire_cursor(cursor, None);
+        assert_eq!(off, cursor);
+        assert!(guides.is_empty());
+    }
+
+    /// Landing on a hole has to beat an alignment lock, or a wire that happens to be
+    /// aligned with something could never be finished.
+    #[test]
+    fn a_hole_centre_outranks_an_alignment_lock() {
+        let mut app = PerfworkApp {
+            tool: ToolMode::DrawWire,
+            wire_align_snap: true,
+            ..Default::default()
+        };
+        app.viewport.pixels_per_pitch = 30.0;
+
+        let hole = app.project.boards[0].local_to_global(GridPos::new(4, 4));
+        app.project.wires.push(Wire {
+            id: Uuid::new_v4(),
+            label: String::new(),
+            start_hole: GridPos::new(0, 0),
+            end_hole: GridPos::new(1, 1),
+            // A waypoint a hair off the hole, which would otherwise capture the cursor.
+            waypoints: vec![WorldPos::new(
+                hole.col as f32 + 0.04,
+                hole.row as f32 + 0.04,
+            )],
+            mode: WireMode::Straight,
+            color: RgbColor::new(255, 0, 0),
+            thickness: 1.0,
+            layer: WireLayer::TopComponent,
+        });
+
+        let cursor = WorldPos::new(hole.col as f32 + 0.01, hole.row as f32 + 0.01);
+        let (resolved, guides) = app.resolve_wire_cursor(cursor, Some(hole));
+        assert_eq!(resolved, app.project.hole_world_pos(hole));
+        assert!(guides.is_empty(), "no guide when the hole wins");
     }
 
     #[test]

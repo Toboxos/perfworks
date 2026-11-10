@@ -170,6 +170,58 @@ pub struct CanvasRenderPreview<'a> {
     pub focus_net: bool,
     /// Nets whose names conflict. Marked permanently, not only when highlighted.
     pub conflict_nets: &'a [&'a Net],
+    /// Alignment guides for the wire point being placed, drawn as grey dashed lines.
+    pub snap_guides: &'a [crate::snap::SnapGuide],
+}
+
+/// Grey dashed lines from each alignment reference to the snapped point.
+///
+/// Drawn along the guide's own axis rather than along the vector between the two points.
+/// That matters when the cursor snaps exactly *onto* its reference — both axes locking to
+/// the same point — where the difference vector is zero and a direction-based version
+/// silently draws nothing, which is precisely when the user most needs to see why the
+/// cursor stopped moving.
+fn draw_snap_guides(
+    painter: &egui::Painter,
+    canvas_rect: Rect,
+    viewport: &Viewport,
+    guides: &[crate::snap::SnapGuide],
+) {
+    use crate::snap::SnapAxis;
+
+    // Extended past both ends so the line reads as an alignment hint rather than as a
+    // connection between the two points.
+    const OVERSHOOT_PX: f32 = 16.0;
+    // Keeps a coincident snap visible as a short crosshair tick.
+    const MIN_HALF_PX: f32 = 22.0;
+
+    let stroke = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(190, 198, 212, 165));
+
+    for guide in guides {
+        let a = viewport.world_to_screen(canvas_rect, guide.reference);
+        let b = viewport.world_to_screen(canvas_rect, guide.snapped);
+
+        let (from, to) = match guide.axis {
+            SnapAxis::Vertical => {
+                let (lo, hi) = (a.y.min(b.y), a.y.max(b.y));
+                let mid = (lo + hi) * 0.5;
+                let half = ((hi - lo) * 0.5 + OVERSHOOT_PX).max(MIN_HALF_PX);
+                (Pos2::new(b.x, mid - half), Pos2::new(b.x, mid + half))
+            }
+            SnapAxis::Horizontal => {
+                let (lo, hi) = (a.x.min(b.x), a.x.max(b.x));
+                let mid = (lo + hi) * 0.5;
+                let half = ((hi - lo) * 0.5 + OVERSHOOT_PX).max(MIN_HALF_PX);
+                (Pos2::new(mid - half, b.y), Pos2::new(mid + half, b.y))
+            }
+        };
+
+        painter.add(egui::Shape::dashed_line(&[from, to], stroke, 6.0, 5.0));
+
+        // A ring on the reference, so it is obvious which point was matched when two
+        // guides are live at once.
+        painter.circle_stroke(a, 3.5, stroke);
+    }
 }
 
 /// Which entities belong to the focused net, so the draw passes can dim the rest.
@@ -529,6 +581,10 @@ pub fn render_workspace(
             draw_wire(painter, canvas_rect, viewport, project, wire, is_selected);
         }
     }
+
+    // 10b. Alignment guides for the wire point being placed. Drawn under the reticle so
+    //      the cursor marker stays the brightest thing on screen.
+    draw_snap_guides(painter, canvas_rect, viewport, preview.snap_guides);
 
     // 11. Render Hovered Hole Crosshair Reticle
     if let Some(hole) = preview.hovered_hole {
@@ -1687,6 +1743,29 @@ fn draw_wire_in_progress(
 
 #[cfg(test)]
 mod viewport_tests {
+    /// Flatten any nested shapes into per-segment (|dx|, |dy|) spans.
+    fn collect_path_spans(shape: &egui::Shape, out: &mut Vec<(f32, f32)>) {
+        match shape {
+            egui::Shape::Path(p) => {
+                for w in p.points.windows(2) {
+                    out.push(((w[1].x - w[0].x).abs(), (w[1].y - w[0].y).abs()));
+                }
+            }
+            egui::Shape::LineSegment { points, .. } => {
+                out.push((
+                    (points[1].x - points[0].x).abs(),
+                    (points[1].y - points[0].y).abs(),
+                ));
+            }
+            egui::Shape::Vec(v) => {
+                for s in v {
+                    collect_path_spans(s, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -1878,6 +1957,7 @@ mod viewport_tests {
                                     highlight_pinned: highlight,
                                     focus_net: highlight,
                                     conflict_nets: &[],
+                                    snap_guides: &[],
                                 },
                             );
                         });
@@ -1978,6 +2058,59 @@ mod viewport_tests {
 
     /// The glow is a drop shadow, not a film: it must sit behind the components, and no
     /// halo may be smaller than the pad it surrounds or it covers the copper.
+    /// A snap that locks both axes to the *same* point leaves the reference and the
+    /// snapped position coincident. An earlier version derived the guide direction from the
+    /// vector between them, so that case produced a zero-length line and drew nothing —
+    /// exactly when the user most needs to see why the cursor stopped moving.
+    #[test]
+    fn a_coincident_snap_still_draws_a_visible_guide() {
+        use crate::snap::{SnapAxis, SnapGuide};
+
+        let point = WorldPos::new(6.0, 5.0);
+        let guides = [
+            SnapGuide {
+                axis: SnapAxis::Vertical,
+                reference: point,
+                snapped: point,
+            },
+            SnapGuide {
+                axis: SnapAxis::Horizontal,
+                reference: point,
+                snapped: point,
+            },
+        ];
+
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let viewport = Viewport::default();
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            draw_snap_guides(
+                &ctx.layer_painter(egui::LayerId::background()),
+                rect,
+                &viewport,
+                &guides,
+            );
+        });
+
+        let mut spans = Vec::new();
+        for s in &output.shapes {
+            collect_path_spans(&s.shape, &mut spans);
+        }
+        assert!(
+            spans.len() >= 2,
+            "both axes must produce dash segments, got {}",
+            spans.len()
+        );
+        assert!(
+            spans.iter().any(|(dx, dy)| *dx > 1.0 && *dy < 0.01),
+            "expected a horizontal guide"
+        );
+        assert!(
+            spans.iter().any(|(dx, dy)| *dy > 1.0 && *dx < 0.01),
+            "expected a vertical guide"
+        );
+    }
+
     #[test]
     fn glow_sits_behind_components_and_never_covers_a_pad() {
         // Pad radius used by `draw_board`; every contact halo has to clear it.
@@ -2045,6 +2178,7 @@ mod viewport_tests {
                         highlight_pinned: true,
                         focus_net: false,
                         conflict_nets: &[],
+                        snap_guides: &[],
                     },
                 );
             });

@@ -79,6 +79,7 @@ pub enum ContextIntent {
     CycleConductorWidth,
     SetHeaderSize { cols: u32, rows: u32 },
     RotatePlacement,
+    ToggleWireAlignSnap,
 }
 
 /// Read-only state an action may consult.
@@ -91,6 +92,7 @@ pub struct ContextScope<'a> {
     pub highlighted_net: Option<GridPos>,
     pub wire_mode: WireMode,
     pub wire_color: RgbColor,
+    pub wire_align_snap: bool,
     pub header_cols: u32,
     pub header_rows: u32,
     pub active_rotation: crate::model::Rotation,
@@ -191,6 +193,29 @@ impl ContextAction for WireRoutingMode {
                 .color(Color32::from_rgb(130, 140, 156)),
         );
         intent
+    }
+}
+
+/// Toggle for aligning wire waypoints to nearby wire points.
+///
+/// A tool option rather than a selection action: it changes how the *next* point is
+/// placed, and has no meaning once a wire exists.
+struct WireAlignSnap;
+impl ContextAction for WireAlignSnap {
+    fn id(&self) -> &'static str {
+        "wire.align_snap"
+    }
+    fn group(&self) -> ActionGroup {
+        ActionGroup::ToolOptions
+    }
+    fn applies(&self, scope: &ContextScope) -> bool {
+        scope.tool == crate::app::ToolMode::DrawWire
+    }
+    fn ui(&self, ui: &mut Ui, scope: &ContextScope) -> Option<ContextIntent> {
+        ui.selectable_label(scope.wire_align_snap, "Align")
+            .on_hover_text("Snap waypoints to the row or column of nearby wire points")
+            .clicked()
+            .then_some(ContextIntent::ToggleWireAlignSnap)
     }
 }
 
@@ -415,6 +440,7 @@ impl ContextAction for NameNet {
 pub fn context_actions() -> &'static [&'static dyn ContextAction] {
     &[
         &WireRoutingMode,
+        &WireAlignSnap,
         &WireColorSwatches,
         &ConductorWidth,
         &HeaderSize,

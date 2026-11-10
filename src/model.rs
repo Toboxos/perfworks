@@ -1732,7 +1732,10 @@ mod label_tests {
             for (col, row) in [(0, 0), (23, 17), (7, 11)] {
                 let coord = b.format_hole_coord(GridPos::new(col, row));
                 let expected = format!("{}{}", b.row_label(row as u32), b.col_label(col as u32));
-                assert_eq!(coord, expected, "at ({col},{row}) with reversal ({rc},{rr})");
+                assert_eq!(
+                    coord, expected,
+                    "at ({col},{row}) with reversal ({rc},{rr})"
+                );
             }
         }
     }
