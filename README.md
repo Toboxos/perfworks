@@ -1,97 +1,60 @@
-# Perfwork
+<p align="center">
+  <img src="docs/assets/perfwork-banner.png" alt="Perfwork — Plan your circuit before you solder. A circuit-inspired P logo above an example perfboard layout with components, wires, and solder traces." width="100%">
+</p>
 
-**Perfwork** is a modern, cross-platform 2D CAD designer for **perfboards**, **stripboards**, and **breadboards**, written in Rust using `egui` / `eframe`. It runs natively as a hardware-accelerated desktop application (macOS, Linux, Windows) and compiles to WebAssembly (`wasm32-unknown-unknown`) via `trunk`.
+A visual layout editor for **perfboards, stripboards, and breadboards**. Place components, route wires, and flip the board to work on the solder side—all in one workspace.
 
-## Features
+Built in Rust with [egui](https://github.com/emilk/egui). Runs on desktop (macOS, Linux, Windows) and in the browser via WebAssembly.
 
-1. **Autodesk Fusion-Inspired Floating UI & Add Dialog**
-   - **Standard Window Menu Bar** (`File`, `Edit`, `View`) at the top for file operations, undo/redo, and view toggles.
-   - **Floating Icon Toolbar** suspended at the top-center of the workspace with Add, Select, Move, Pin, Header, Wire, Solder, Cut, Erase, Ghost, and Flip tools. Icons are painted as vector geometry, so no system fonts or emoji fonts are required.
-   - **Unified Add Dialog (`A` or `Right-Click → Add Board / Component...`)**: Browse and place Perfboards/Stripboards/Breadboards, Single Pins, Parametric Headers, and Standard Library Components from one dialog.
-   - **Multi-Selection & Clear All**: Press `Ctrl+A` / `Cmd+A` to select all boards, components, wires, and solder traces at once (`Del` to delete all selected), or use `Clear All` to wipe the plane completely empty.
-   - **Double-click to Add**: Double-click a board, component, single-pin entry, or parametric-header entry to enter placement mode. The explicit Place buttons remain available.
-   - **Move Selection (`M`)**: Select an item or group, press `M`, move the pointer, and click to place. `Esc` or right-click cancels; a completed move is one undo action. With nothing selected, `M` enables board dragging.
-   - **Quick Component Copies**: `Ctrl+C` / `Cmd+C` copies selected components to the in-app component clipboard; `Ctrl+V` / `Cmd+V` attaches copies to the pointer. Click to place on free holes, or `Esc` to cancel. Copies preserve relative spacing, rotation, labels, and colors and receive new IDs and reference designators. Text fields keep their usual text-copy/paste behavior.
+> **Vibe coded, work in progress.** Built with AI assistance. Expect rough edges, and double-check layouts and dimensions before building hardware.
 
-2. **KiCad-Inspired Dual Control Modes (Touchpad & Mouse)**
-   - Switch between **Touchpad (KiCad Pan/Pinch)** and **Mouse (Wheel Zoom / Mid-Pan)** at any time via the dropdown in the bottom-right status bar.
-   - **Touchpad Mode**: Two-finger scroll pans smoothly across the plane; Pinch gesture or `Cmd`/`Ctrl` + scroll zooms centered on the cursor.
-   - **Mouse Mode**: Scroll wheel zooms centered on the cursor; Middle-drag, Right-drag, or `Space` + Left-drag pans.
+## What you can do
 
-3. **Multi-Board Plane & Customizable Perfboards**
-   - Place multiple boards of custom column × row dimensions and move them freely on the 2D plane.
-   - Customizable row and column coordinate identifiers per dimension: `1, 2, 3...`, `0, 1, 2...`, `A, B, C...`, `a, b, c...`, or hidden.
-   - **Reversible identifiers** per axis, independently: count columns right-to-left and/or rows bottom-to-top. Boards cannot be rotated, so this is how a design is matched to a physical board lying the other way round on the bench. It is presentation only — no hole moves, and the canvas edge labels and every coordinate readout share one source of truth, so they cannot disagree.
-   - Supports **Perfboard** (isolated pads), **Stripboard** (horizontal or vertical copper strips with interactive track cuts), and **Breadboard** (terminal strips) across 5 PCB color themes.
+- **Lay out multiple boards** with custom sizes, labels, colors, and common perfboard presets.
+- **Place through-hole parts** including headers, JST connectors, screw terminals, DIP sockets, resistors, and switches.
+- **Route wires and solder bridges**, with straight or curved wires, alignment snapping, and stripboard track cuts.
+- **See both sides** with a mirrored solder-side view and transparent component housings.
+- **Save and share** projects as JSON. Export front/back PNGs and simplified 3D STEP models for enclosure planning on desktop.
 
-4. **Connector Pins, Parametric Headers & Standard Footprint Library**
-   - **Single Connector Pins (`P`)**: Round or square-pad single pins.
-   - **Parametric Header Lines (`H`)**: Arbitrary `N × M` male or female pin headers (`1×2` through `4×40`).
-   - **Standard Component Library (`A`)**:
-     - **JST-XH Shrouded Connectors (`2P`–`8P`)**: Accurately renders the 2D shrouded housing and models physical side-wall overhang that blocks 1 hole on each side of the pin row.
-     - **Screw Terminals (`5.08mm` 2-Pole & 3-Pole)**, **DIP IC Sockets (`DIP-8`, `DIP-14`, `DIP-16`)**, **Axial Resistors**, **TO-220**, and **6×6mm Tactile Switches**.
+## Run it
 
-5. **Wires (Straight & Spline) & Solder Traces**
-   - **Wires (`W`)**: Must start and end at board holes while allowing arbitrary intermediate waypoints in between. Switch between **Straight (angled polyline)** and **Smooth Catmull-Rom Spline** routing (`Tab` while routing, or toggle per wire in the Inspector).
-   - **Alignment Snapping**: While routing, waypoints snap to the row or column of nearby wire points — endpoints and waypoints of every wire, including the one being drawn. Each axis locks independently, so a point can take its column from one wire and its row from another to square off a corner. A grey dashed guide runs back to each point that was matched. The same snapping applies when dragging the waypoint handles of an existing selected wire. Toggle with **Align** in the context toolbar; landing on a board hole always outranks an alignment lock while routing, so endpoints stay reachable.
-   - **Solder Connections (`S`)**: Drag or click across neighbor holes to create metallic solder bridges/traces. Soldered holes block new connector pins while still allowing other solder lines to connect onto them.
+From a checkout of this repository:
 
-6. **Ghost Mode & Solder-Side View**
-   - **Ghost (`G`)** makes component housings transparent enough to inspect holes and solder underneath. It is enabled automatically while routing wires, drawing solder, or cutting tracks; leaving the tool restores the manual ghost preference.
-   - **Flip (`F`)** turns the workspace over into a horizontally mirrored solder-side view, keeping identifiers readable and hole coordinates unchanged. Components appear transparent and solder-side wires/traces are drawn in front. Pan, zoom, picking, and placement use the mirrored coordinates. This is a view change, not a destructive edit or a physical component flip.
-   - In the flipped view, component-side wires are ghosted too (including their outlines and selection handles), while solder-side wires and through-hole pins/leads remain solid. Housing-overhang markers are hidden on the solder side; ghost wire paths do not visually block the holes they cross.
+**With Nix** (flakes enabled):
 
-7. **Real Physical Dimensions**
-   - Boards carry a millimetre outline (border, thickness, corner radius) and corner hole geometry (inset, drill, pad) alongside their hole lattice, so a board is the size it claims to be rather than a hole count with an arbitrary margin.
-   - The four boards of the standard double-sided FR4 kit ship as presets: **5×7cm (24×18)**, **4×6cm (20×14)**, **3×7cm (24×10)** and **2×8cm (28×6)**. Hole counts were measured from the physical boards; all four share one border constant and reproduce their catalogue size to within 0.3mm.
-   - **Edge solder pads** (the oversized slots down each side) are optional per board and are ordinary solderable holes: they join nets, accept wires and participate in DRC, on both sides of the board. They are named `L`/`R` plus the row. Their offset from the hole field and their size are set in millimetres, so a pad can be matched to a measured one — the real pads sit ~1.5 pitches out, which is off the integer lattice, so a pad keeps a lattice identity for topology and a separate millimetre position for geometry.
-   - The corner-hole **drill diameter is the one dimension not confirmed with calipers** — the reference photograph resolves ~5 px/mm. It is editable per board in the inspector, and it is the number an enclosure standoff has to match.
-
-8. **Export for CAD**
-   - **STEP (AP214)** — `File → Export STEP (3D)...` writes one solid per board and per component. Boards are prisms drilled at their mounting holes; components are bounding prisms extruded from library body heights. Enough for enclosure clearance, standoff alignment and fastener placement. The 2.54mm hole matrix is deliberately not drilled: hundreds of cylindrical faces cost real time in every CAD kernel and nothing passes through those holes from outside.
-   - Component heights are nominal values for the common variant of each part. Parts sold in several heights — tactile switches especially — can be overridden per placement in the inspector.
-   - **PNG front & back** — `File → Export Board Images (PNG)...` renders both sides of every board at exactly its millimetre extents. STEP carries per-face colour but has no texture concept, so artwork travels as a separate image: apply the PNG to the solid's top face at the board's own width and height and it lands 1:1 with no scaling guesswork.
-
-## Building & Running with Nix
-
-```bash
-# Enter the development shell (includes cargo, rustc, clippy, rustfmt, trunk)
-nix develop
-
-# Run the desktop application directly via Nix
+```sh
 nix run
-
-# Build the release package via Nix
-nix build
 ```
 
-## Checks
+**With Rust** (stable toolchain and your platform's native build dependencies):
 
-```bash
-nix develop --command cargo test
-nix develop --command cargo-clippy clippy --all-targets -- -D warnings
+```sh
+cargo run --release
 ```
 
-Tests cover double-click placement with simulated pointer events, keyboard commands,
-move/paste validation and undo/cancel behavior, automatic ghost mode, mirrored camera
-transforms, headless rendering of both sides, font-independent icon geometry, board
-millimetre geometry and pad clearances, and the export coordinate frames.
+**In a local browser** (requires [Trunk](https://trunkrs.dev/) and Rust):
 
-### Export checks that need more than `cargo test`
-
-Two export paths cannot be judged from inside the test suite, and both have already hidden
-a real defect behind a passing build:
-
-```bash
-# Round-trip a STEP export through FreeCAD's OpenCASCADE kernel.
-# Catches faces that are well-formed but fail to sew into solids.
-nix develop --command ./tools/validate_step.sh
-
-# Render every board front and back through a real GL context.
-# A uniformly-coloured output means the render failed without erroring.
-nix develop --command ./tools/validate_png.sh
+```sh
+rustup target add wasm32-unknown-unknown
+trunk serve --open
 ```
 
-`validate_step.sh` needs FreeCAD (`FREECAD=/path/to/freecadcmd` to override the default
-macOS location). `validate_png.sh` opens a window briefly, since offscreen rendering needs
-a GPU context that only exists inside one.
+## Your first layout
+
+1. Press **A** to add a board, then open the same dialog to place components. Or try **File → Load Demo Circuit**.
+2. Use **W** for wires and **S** for solder bridges. Press **Tab** while routing to switch between straight and curved wires.
+3. Select items and press **M** to move them. **Esc** cancels the current operation.
+4. Press **F** to flip to the solder side; **G** toggles transparent housings.
+5. Save with **File → Save Project…** on desktop, or use **File → Import / Export JSON…** to copy your layout in the browser.
+
+Choose **Touchpad** or **Mouse** controls in the bottom-right status bar. Touchpad scrolling pans; the mouse wheel zooms.
+
+## Development
+
+```sh
+nix develop
+cargo test
+cargo clippy --all-targets -- -D warnings
+```
+
+Additional export checks: [STEP validation](tools/validate_step.sh) (requires FreeCAD) and [PNG validation](tools/validate_png.sh) (opens a GPU-backed window). STEP exports use simplified component bodies with nominal heights—check dimensions against your actual parts.
