@@ -230,7 +230,7 @@ pub const WIRE_PALETTE: &[(&str, RgbColor)] = &[
     ("White (CLK)", RgbColor::new(232, 236, 242)),
 ];
 
-pub struct PerfworkApp {
+pub struct PerfworksApp {
     pub project: Project,
     pub undo_stack: Vec<Project>,
     pub redo_stack: Vec<Project>,
@@ -340,7 +340,7 @@ pub struct PerfworkApp {
     pub status_toast: Option<(String, bool)>, // (message, is_error)
 }
 
-impl Default for PerfworkApp {
+impl Default for PerfworksApp {
     fn default() -> Self {
         Self {
             project: Project::new_starter(),
@@ -428,7 +428,7 @@ impl Default for PerfworkApp {
     }
 }
 
-impl PerfworkApp {
+impl PerfworksApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         configure_modern_cad_theme(&cc.egui_ctx);
         let mut app = Self::default();
@@ -1432,7 +1432,7 @@ impl PerfworkApp {
     }
 }
 
-impl eframe::App for PerfworkApp {
+impl eframe::App for PerfworksApp {
     /// Take Tab away from egui's focus traversal when it means "switch wire routing mode".
     ///
     /// egui latches the focus direction from a Tab press inside `Memory::begin_pass`,
@@ -1480,18 +1480,18 @@ impl eframe::App for PerfworkApp {
         // every board and quits, so the feature can still be exercised end to end.
         // See tools/validate_png.sh.
         #[cfg(not(target_arch = "wasm32"))]
-        if let Ok(path) = std::env::var("PERFWORK_LOAD") {
+        if let Ok(path) = std::env::var("PERFWORKS_LOAD") {
             if let Ok(data) = std::fs::read_to_string(&path) {
                 if let Ok(p) = serde_json::from_str::<Project>(&data) {
                     self.project = p;
                     self.selected.clear();
                 }
             }
-            std::env::remove_var("PERFWORK_LOAD");
+            std::env::remove_var("PERFWORKS_LOAD");
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        if let Ok(dir) = std::env::var("PERFWORK_DUMP_PNG") {
+        if let Ok(dir) = std::env::var("PERFWORKS_DUMP_PNG") {
             self.export_board_images(
                 std::path::Path::new(&dir),
                 "dump",
@@ -1499,7 +1499,7 @@ impl eframe::App for PerfworkApp {
             );
             if let Some((msg, err)) = &self.status_toast {
                 println!(
-                    "PERFWORK_DUMP_PNG: {}{}",
+                    "PERFWORKS_DUMP_PNG: {}{}",
                     if *err { "ERROR: " } else { "" },
                     msg
                 );
@@ -1570,12 +1570,12 @@ impl eframe::App for PerfworkApp {
     }
 }
 
-impl PerfworkApp {
+impl PerfworksApp {
     /// Clean, standard application menu bar at the top of the window
     fn render_window_menu_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         egui::menu::bar(ui, |ui| {
             ui.label(
-                RichText::new("PERFWORK")
+                RichText::new("PERFWORKS")
                     .font(FontId::proportional(13.5))
                     .strong()
                     .color(Color32::from_rgb(88, 202, 255)),
@@ -1602,7 +1602,7 @@ impl PerfworkApp {
                     if ui.button("Open Project...").clicked() {
                         ui.close_menu();
                         if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Perfwork Project", &["json"])
+                            .add_filter("Perfworks Project", &["json"])
                             .pick_file()
                         {
                             if let Ok(data) = std::fs::read_to_string(&path) {
@@ -1622,8 +1622,8 @@ impl PerfworkApp {
                     if ui.button("Save Project...").clicked() {
                         ui.close_menu();
                         if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Perfwork Project", &["perfwork.json", "json"])
-                            .set_file_name("circuit.perfwork.json")
+                            .add_filter("Perfworks Project", &["perfworks.json", "json"])
+                            .set_file_name("circuit.perfworks.json")
                             .save_file()
                         {
                             if let Ok(json) = serde_json::to_string_pretty(&self.project) {
@@ -4075,8 +4075,8 @@ mod interaction_tests {
         }
     }
 
-    fn fixture() -> PerfworkApp {
-        let mut app = PerfworkApp {
+    fn fixture() -> PerfworksApp {
+        let mut app = PerfworksApp {
             project: Project::new_empty("Test"),
             ..Default::default()
         };
@@ -4172,7 +4172,7 @@ mod interaction_tests {
         assert!(app.components_are_ghosted());
     }
 
-    fn key(app: &mut PerfworkApp, key: egui::Key, modifiers: egui::Modifiers) {
+    fn key(app: &mut PerfworksApp, key: egui::Key, modifiers: egui::Modifiers) {
         let ctx = egui::Context::default();
         let input = egui::RawInput {
             modifiers,
@@ -4299,7 +4299,7 @@ mod interaction_tests {
     /// it, click it, and confirm the highlight anchor lands on that net.
     #[test]
     fn net_panel_rows_hover_and_click_to_highlight() {
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             project: Project::new_starter(),
             show_net_panel: true,
             ..Default::default()
@@ -4315,7 +4315,7 @@ mod interaction_tests {
 
         let ctx = egui::Context::default();
         let mut time = 0.0;
-        let mut draw = |app: &mut PerfworkApp, events| {
+        let mut draw = |app: &mut PerfworksApp, events| {
             time += 0.05;
             ctx.run(
                 egui::RawInput {
@@ -4391,7 +4391,7 @@ mod interaction_tests {
 
     #[test]
     fn clicking_a_pin_highlights_its_net_and_bare_board_clears_it() {
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             project: Project::new_starter(),
             ..Default::default()
         };
@@ -4429,7 +4429,7 @@ mod interaction_tests {
     #[test]
     fn a_new_conductor_highlights_its_net_without_reselecting() {
         for use_wire in [false, true] {
-            let mut app = PerfworkApp {
+            let mut app = PerfworksApp {
                 project: Project::new_starter(),
                 ..Default::default()
             };
@@ -4497,7 +4497,7 @@ mod interaction_tests {
     fn every_context_action_applies_exactly_where_expected() {
         use crate::actions::context_actions;
 
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             project: Project::new_starter(),
             ..Default::default()
         };
@@ -4601,7 +4601,7 @@ mod interaction_tests {
 
     #[test]
     fn context_intents_delegate_to_real_state_changes() {
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             project: Project::new_starter(),
             ..Default::default()
         };
@@ -4681,7 +4681,7 @@ mod interaction_tests {
     /// a click commits.
     #[test]
     fn the_snap_guide_shows_exactly_where_the_waypoint_will_land() {
-        let mut app = PerfworkApp::default();
+        let mut app = PerfworksApp::default();
         app.project.wires.clear();
         app.tool = ToolMode::DrawWire;
         app.wire_align_snap = true;
@@ -4729,7 +4729,7 @@ mod interaction_tests {
     /// existed.
     #[test]
     fn dragging_an_existing_waypoint_snaps_like_drawing_one() {
-        let mut app = PerfworkApp::default();
+        let mut app = PerfworksApp::default();
         app.project.wires.clear();
         app.viewport.pixels_per_pitch = 30.0;
 
@@ -4775,7 +4775,7 @@ mod interaction_tests {
     /// at all.
     #[test]
     fn a_dragged_waypoint_is_not_its_own_alignment_reference() {
-        let mut app = PerfworkApp::default();
+        let mut app = PerfworksApp::default();
         app.project.wires.clear();
         app.viewport.pixels_per_pitch = 30.0;
 
@@ -4815,7 +4815,7 @@ mod interaction_tests {
 
     #[test]
     fn disabling_align_snap_leaves_the_cursor_untouched() {
-        let mut app = PerfworkApp::default();
+        let mut app = PerfworksApp::default();
         app.project.wires.clear();
         app.tool = ToolMode::DrawWire;
         app.wire_snap_waypoints_half_grid = false;
@@ -4843,7 +4843,7 @@ mod interaction_tests {
     /// aligned with something could never be finished.
     #[test]
     fn a_hole_centre_outranks_an_alignment_lock() {
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             tool: ToolMode::DrawWire,
             wire_align_snap: true,
             ..Default::default()
@@ -4875,7 +4875,7 @@ mod interaction_tests {
 
     #[test]
     fn t_cycles_the_selected_conductor_width() {
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             project: Project::new_starter(),
             ..Default::default()
         };
@@ -4917,7 +4917,7 @@ mod interaction_tests {
         };
 
         // While the wire tool is active, Tab is taken from egui and toggles the mode.
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             project: Project::new_starter(),
             tool: ToolMode::DrawWire,
             ..Default::default()
@@ -4986,7 +4986,7 @@ mod interaction_tests {
         let ctx = egui::Context::default();
 
         // No wire context: Tab belongs to egui so the menus stay keyboard-navigable.
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             project: Project::new_starter(),
             tool: ToolMode::Select,
             ..Default::default()
@@ -5084,7 +5084,7 @@ mod interaction_tests {
 
     #[test]
     fn clicking_a_wire_mid_span_resolves_its_net() {
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             project: Project::new_empty("t"),
             ..Default::default()
         };
@@ -5133,7 +5133,7 @@ mod interaction_tests {
 
     #[test]
     fn a_multi_net_component_body_does_not_guess_a_net() {
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             project: Project::new_starter(),
             ..Default::default()
         };
@@ -5184,7 +5184,7 @@ mod interaction_tests {
 
     #[test]
     fn hover_preview_is_transient_and_pinning_is_not() {
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             project: Project::new_starter(),
             ..Default::default()
         };
@@ -5226,7 +5226,7 @@ mod interaction_tests {
     /// the wire ending in the same hole, the net, and the board — five panes, not one.
     #[test]
     fn clicking_a_pin_with_a_wire_on_it_yields_every_layer() {
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             project: Project::new_starter(),
             ..Default::default()
         };
@@ -5291,7 +5291,7 @@ mod interaction_tests {
     /// high-index pin must backfill the real defaults, not blanks.
     #[test]
     fn editing_a_pin_label_backfills_shorter_override_vectors() {
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             project: Project::new_empty("t"),
             ..Default::default()
         };
@@ -5333,7 +5333,7 @@ mod interaction_tests {
 
         let ctx = egui::Context::default();
         let mut time = 0.0;
-        let mut draw = |app: &mut PerfworkApp, events| {
+        let mut draw = |app: &mut PerfworksApp, events| {
             time += 0.05;
             ctx.run(
                 egui::RawInput {
@@ -5412,7 +5412,7 @@ mod interaction_tests {
 
     #[test]
     fn selecting_a_wire_surfaces_its_net_in_the_sidebar() {
-        let mut app = PerfworkApp {
+        let mut app = PerfworksApp {
             project: Project::new_starter(),
             ..Default::default()
         };
@@ -5434,7 +5434,7 @@ mod interaction_tests {
         // Render the sidebar and confirm both the wire editor and its net appear.
         let ctx = egui::Context::default();
         let mut time = 0.0;
-        let mut draw = |app: &mut PerfworkApp| {
+        let mut draw = |app: &mut PerfworksApp| {
             time += 0.05;
             ctx.run(
                 egui::RawInput {
@@ -5546,7 +5546,7 @@ mod interaction_tests {
             app.add_dialog_tab = tab;
             let ctx = egui::Context::default();
             let mut time = 0.0;
-            let mut draw = |app: &mut PerfworkApp, events| {
+            let mut draw = |app: &mut PerfworksApp, events| {
                 time += 0.05;
                 ctx.run(
                     egui::RawInput {

@@ -12,16 +12,17 @@ pub mod snap;
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Perfwork — Perfboard, Stripboard & Breadboard CAD Designer")
+            .with_title("Perfworks — Perfboard, Stripboard & Breadboard CAD Designer")
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([960.0, 620.0]),
         ..Default::default()
     };
 
     eframe::run_native(
+        // Preserve the original storage identity so existing workspaces still load.
         "perfwork",
         native_options,
-        Box::new(|cc| Ok(Box::new(app::PerfworkApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(app::PerfworksApp::new(cc)))),
     )
 }
 
@@ -36,10 +37,10 @@ fn main() {
             .expect("No document");
 
         let canvas = document
-            .get_element_by_id("perfwork_canvas")
-            .expect("Failed to find perfwork_canvas")
+            .get_element_by_id("perfworks_canvas")
+            .expect("Failed to find perfworks_canvas")
             .dyn_into::<web_sys::HtmlCanvasElement>()
-            .expect("perfwork_canvas was not a HtmlCanvasElement");
+            .expect("perfworks_canvas was not a HtmlCanvasElement");
 
         let web_options = eframe::WebOptions::default();
 
@@ -47,7 +48,7 @@ fn main() {
             .start(
                 canvas,
                 web_options,
-                Box::new(|cc| Ok(Box::new(app::PerfworkApp::new(cc)))),
+                Box::new(|cc| Ok(Box::new(app::PerfworksApp::new(cc)))),
             )
             .await
             .expect("failed to start eframe");
@@ -193,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_clear_all_and_select_all() {
-        let mut app = crate::app::PerfworkApp::default();
+        let mut app = crate::app::PerfworksApp::default();
         assert!(!app.project.boards.is_empty());
         assert!(!app.project.connectors.is_empty());
 

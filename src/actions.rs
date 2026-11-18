@@ -10,7 +10,7 @@
 //!    the app; it returns a [`ContextIntent`] describing what the user asked for. This is
 //!    not merely stylistic: an action reachable *from* the app cannot also borrow the app
 //!    mutably, so returning an intent is what makes the whole arrangement compile.
-//! 3. `PerfworkApp::apply_context_intent` — the only place that mutates, and its arms
+//! 3. `PerfworksApp::apply_context_intent` — the only place that mutates, and its arms
 //!    only delegate to methods that already exist.
 
 use egui::{Color32, RichText, Ui};

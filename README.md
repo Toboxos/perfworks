@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/perfwork-banner.png" alt="Perfwork — Plan your circuit before you solder. A circuit-inspired P logo above an example perfboard layout with components, wires, and solder traces." width="100%">
+  <img src="docs/assets/perfworks-banner.png" alt="Perfworks — Plan your circuit before you solder. A circuit-inspired P logo above an example perfboard layout with components, wires, and solder traces." width="100%">
 </p>
 
 A visual layout editor for **perfboards, stripboards, and breadboards**. Place components, route wires, and flip the board to work on the solder side—all in one workspace.

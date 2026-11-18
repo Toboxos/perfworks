@@ -1,5 +1,5 @@
 {
-  description = "Perfwork - Modern Perfboard & Stripboard CAD Designer";
+  description = "Perfworks - Modern Perfboard & Stripboard CAD Designer";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -41,7 +41,7 @@
       in
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
-          pname = "perfwork";
+          pname = "perfworks";
           version = "0.1.0";
           src = ./.;
           cargoLock = {
@@ -56,20 +56,20 @@
           buildInputs = darwinDeps ++ linuxDeps;
 
           postInstall = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-            wrapProgram $out/bin/perfwork \
+            wrapProgram $out/bin/perfworks \
               --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs}
           '';
 
           meta = with lib; {
             description = "Modern Perfboard, Stripboard & Breadboard CAD Designer";
             license = licenses.mit;
-            mainProgram = "perfwork";
+            mainProgram = "perfworks";
           };
         };
 
         apps.default = {
           type = "app";
-          program = "${self.packages.${system}.default}/bin/perfwork";
+          program = "${self.packages.${system}.default}/bin/perfworks";
         };
 
         devShells.default = pkgs.mkShell {

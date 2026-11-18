@@ -590,7 +590,7 @@ pub fn export_step(project: &Project, file_name: &str) -> String {
         "ISO-10303-21;\n\
          HEADER;\n\
          FILE_DESCRIPTION(('Perfboard assembly'),'2;1');\n\
-         FILE_NAME('{}','',(''),(''),'Perfwork','Perfwork','');\n\
+         FILE_NAME('{}','',(''),(''),'Perfworks','Perfworks','');\n\
          FILE_SCHEMA(('AUTOMOTIVE_DESIGN {{ 1 0 10303 214 3 1 1 }}'));\n\
          ENDSEC;\n\
          DATA;\n",
@@ -733,14 +733,14 @@ mod tests {
         }
     }
 
-    /// Writes the starter project to disk when PERFWORK_DUMP_STEP is set, so the file can
+    /// Writes the starter project to disk when PERFWORKS_DUMP_STEP is set, so the file can
     /// be round-tripped through a real CAD kernel outside the test suite.
     #[test]
     fn dump_step_for_external_validation() {
-        let Ok(path) = std::env::var("PERFWORK_DUMP_STEP") else {
+        let Ok(path) = std::env::var("PERFWORKS_DUMP_STEP") else {
             return;
         };
-        std::fs::write(&path, export_step(&starter(), "perfwork.step")).unwrap();
+        std::fs::write(&path, export_step(&starter(), "perfworks.step")).unwrap();
     }
 
     /// Every edge must be used by exactly two faces. This is the manifold condition, and

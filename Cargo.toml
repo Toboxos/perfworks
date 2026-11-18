@@ -1,8 +1,8 @@
 [package]
-name = "perfwork"
+name = "perfworks"
 version = "0.1.0"
 edition = "2021"
-description = "Perfwork - Modern Perfboard, Stripboard & Breadboard CAD Designer"
+description = "Perfworks - Modern Perfboard, Stripboard & Breadboard CAD Designer"
 license = "MIT"
 
 [dependencies]

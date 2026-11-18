@@ -1,4 +1,4 @@
-"""Round-trip a Perfwork STEP export through a real CAD kernel.
+"""Round-trip a Perfworks STEP export through a real CAD kernel.
 
 The Rust test suite can check that the file is syntactically valid part 21 and that its
 topology is manifold, but it cannot tell you whether OpenCASCADE will actually sew the
@@ -11,14 +11,14 @@ Usage (requires FreeCAD, which ships the OCC kernel):
 
 freecadcmd will not run a .py given as an argument -- it treats arguments as documents to
 open -- so the wrapper feeds this file through `-c exec(...)` and passes the STEP path in
-PERFWORK_STEP. Exits non-zero if any solid fails to form, is open, or is invalid.
+PERFWORKS_STEP. Exits non-zero if any solid fails to form, is open, or is invalid.
 """
 
 import os
 import sys
 import Part
 
-path = os.environ["PERFWORK_STEP"]
+path = os.environ["PERFWORKS_STEP"]
 shape = Part.Shape()
 shape.read(path)
 

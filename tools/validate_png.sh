@@ -3,18 +3,18 @@
 #
 # Offscreen rendering is the one export path the test suite cannot reach: it needs a GPU
 # context, which only exists inside a running window. The app exports and quits when
-# PERFWORK_DUMP_PNG is set, so the whole path still gets exercised end to end.
+# PERFWORKS_DUMP_PNG is set, so the whole path still gets exercised end to end.
 #
 # Unit tests cover the geometry (src/export/image.rs); this covers the GL plumbing. A
 # uniformly-coloured output means the render failed even though nothing errored -- that is
 # how the framebuffer binding bug presented.
 set -euo pipefail
 
-OUT="${1:-${TMPDIR:-/tmp}/perfwork-png}"
+OUT="${1:-${TMPDIR:-/tmp}/perfworks-png}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$OUT"
 
-PERFWORK_DUMP_PNG="$OUT" cargo run --manifest-path "$ROOT/Cargo.toml" 2>&1 | grep PERFWORK_DUMP_PNG || true
+PERFWORKS_DUMP_PNG="$OUT" cargo run --manifest-path "$ROOT/Cargo.toml" 2>&1 | grep PERFWORKS_DUMP_PNG || true
 
 shopt -s nullglob
 files=("$OUT"/*.png)

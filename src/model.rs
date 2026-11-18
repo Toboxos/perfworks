@@ -1259,7 +1259,7 @@ impl HoleOccupancy {
     }
 }
 
-/// Complete Perfwork project document
+/// Complete Perfworks project document
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
