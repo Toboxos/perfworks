@@ -4,3 +4,6 @@ result
 result-*
 .DS_Store
 *.swp
+
+# Local bug/design task notes (see .claude/skills/bug-tasks)
+/tasks
